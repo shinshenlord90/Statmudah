@@ -1,4 +1,4 @@
-import statmudah as s
+import smstats as s
 for got, want in [(s.p_t(2.228, 10), .05), (s.p_t(1.96, 1e6), .05), (s.p_f(4.103, 2, 10), .05),
                   (s.p_chi2(3.841, 1), .05), (s.p_chi2(18.307, 10), .05), (s.p_chi2(2.0, 4), .7358)]:
     assert abs(got - want) < 1e-3, (got, want)
@@ -30,3 +30,10 @@ m = s.anova2([3, 4, 5, 6, 7, 9, 2, 3, 8, 9, 5, 4], list("PPPQQQPPPQQQ"), list("x
 assert all(abs(m["terms"][k][0] - w) < 1e-6 for k, w in (("A", 18.75), ("B", .75), ("AB", 2.083333))) and abs(m["sse"] - 41.333333) < 1e-5
 assert s.anova2([1, 2, 3, 4], list("PPQQ"), list("xyxx")) is None  # sel (Q, y) kosong
 print("anova2, tukey, spearman, levene ok")
+# Fasa 1: rujukan scipy 1.18
+x, a, b, y = [3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5], [1, 2, 2, 3, 4, 5], [3, 4, 4, 5, 5, 6, 6], [2, 2, 3, 5, 4, 6, 7, 6, 4, 3, 6]
+g1, _, g2, _ = s.skew_kurt(x); assert abs(g1 - .664050) < 1e-5 and abs(g2 - .650510) < 1e-5
+assert abs(s.mann_whitney(a, b)[2] - .035426) < 1e-5 and abs(s.wilcoxon(x, y)[3] - .854464) < 1e-5
+assert abs(s.kruskal([a, b, [5, 6, 7, 7]])[0] - 9.303025) < 1e-5
+assert s.skew_kurt([1, 2, 3]) is None and s.wilcoxon([1, 2], [1, 2]) is None
+print("fasa 1 statistik ok")

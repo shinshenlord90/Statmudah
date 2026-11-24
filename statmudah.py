@@ -1,233 +1,60 @@
 #!/usr/bin/python3
 """StatMudah - aplikasi statistik ringkas (seperti PSPP) dengan rupa Windows 7."""
-import csv, math, statistics as st, tkinter as tk
+import base64, csv, html, json, math, os, statistics as st, tkinter as tk
 from collections import Counter
 from tkinter import ttk, filedialog, messagebox, simpledialog
+from smstats import *
+from i18n import EN
 
-# ---------- statistik (tiada kebergantungan luar) ----------
-def _betacf(a, b, x):
-    qab, qap, qam, c, d = a + b, a + 1, a - 1, 1.0, 1 - (a + b) * x / (a + 1)
-    d = 1 / (d if abs(d) > 1e-30 else 1e-30); h = d
-    for m in range(1, 300):
-        m2 = 2 * m
-        for aa in (m * (b - m) * x / ((qam + m2) * (a + m2)), -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))):
-            d = 1 + aa * d; d = 1 / (d if abs(d) > 1e-30 else 1e-30)
-            c = 1 + aa / c; c = c if abs(c) > 1e-30 else 1e-30
-            h *= d * c
-        if abs(d * c - 1) < 3e-14: break
-    return h
+VERSION = "2.0"
+CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "statmudah", "settings.json")
+SET = {"lang": "ms"}
 
-def betainc(a, b, x):
-    if x <= 0: return 0.0
-    if x >= 1: return 1.0
-    bt = math.exp(math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b) + a * math.log(x) + b * math.log(1 - x))
-    return bt * _betacf(a, b, x) / a if x < (a + 1) / (a + b + 2) else 1 - bt * _betacf(b, a, 1 - x) / b
+def load_settings():
+    try:
+        with open(CONF, encoding="utf-8") as f: SET.update(json.load(f))
+    except (OSError, ValueError): pass
 
-def p_t(t, df): return betainc(df / 2, 0.5, df / (df + t * t))          # dua hujung
-def p_f(f, d1, d2): return betainc(d2 / 2, d1 / 2, d2 / (d2 + d1 * f)) if f > 0 else 1.0
-def p_chi2(x, k):  # hujung atas, siri gamma tak lengkap
-    if x <= 0: return 1.0
-    a, s, term = k / 2, 0.0, 1.0 / (k / 2)
-    if x / 2 < a + 1:
-        s = term
-        for n in range(1, 500): term *= (x / 2) / (a + n); s += term
-        return 1 - s * math.exp(-x / 2 + a * math.log(x / 2) - math.lgamma(a))
-    # pecahan berterusan untuk x besar
-    b, c, d = x / 2 + 1 - a, 1e300, 1 / (x / 2 + 1 - a); h = d
-    for i in range(1, 500):
-        an = -i * (i - a); b += 2
-        d = an * d + b; d = 1 / (d if abs(d) > 1e-300 else 1e-300)
-        c = b + an / c; c = c if abs(c) > 1e-300 else 1e-300
-        h *= d * c
-    return math.exp(-x / 2 + a * math.log(x / 2) - math.lgamma(a)) * h
+def save_settings():
+    try:
+        os.makedirs(os.path.dirname(CONF), exist_ok=True)
+        with open(CONF, "w", encoding="utf-8") as f: json.dump(SET, f)
+    except OSError: pass  # tetapan bahasa tidak kritikal
 
-def inverse(m):
-    """Songsang matriks (Gauss-Jordan); None jika singular."""
-    n = len(m); a = [row[:] + [float(i == j) for j in range(n)] for i, row in enumerate(m)]
-    for c in range(n):
-        piv = max(range(c, n), key=lambda r: abs(a[r][c]))
-        if abs(a[piv][c]) < 1e-12: return None
-        a[c], a[piv] = a[piv], a[c]; d = a[c][c]; a[c] = [v / d for v in a[c]]
-        for r in range(n):
-            if r != c and a[r][c]: f = a[r][c]; a[r] = [x - f * y for x, y in zip(a[r], a[c])]
-    return [row[n:] for row in a]
+def _(text, /, **kw):
+    """Terjemah rentetan BM ke bahasa semasa, kemudian isi {nama}."""
+    t = EN.get(text, text) if SET["lang"] == "en" else text
+    return t.format(**kw) if kw else t
 
-def ols(y, xs):
-    """Regresi linear OLS. xs: senarai baris peramal. Pulangkan dict atau None jika kolinear/data kurang."""
-    n, k = len(y), len(xs[0]) if xs else 0
-    if n - k - 1 < 1: return None
-    X = [[1.0] + list(r) for r in xs]
-    inv = inverse([[sum(X[i][a] * X[i][b] for i in range(n)) for b in range(k + 1)] for a in range(k + 1)])
-    if inv is None: return None
-    xty = [sum(X[i][a] * y[i] for i in range(n)) for a in range(k + 1)]
-    b = [sum(inv[a][c] * xty[c] for c in range(k + 1)) for a in range(k + 1)]
-    my = sum(y) / n; sst = sum((v - my) ** 2 for v in y)
-    yhat = [sum(b[a] * X[i][a] for a in range(k + 1)) for i in range(n)]; e = [y[i] - yhat[i] for i in range(n)]
-    sse = sum(v * v for v in e)
-    if sst == 0: return None
-    ssr, dfe = sst - sse, n - k - 1; mse = sse / dfe
-    se = [math.sqrt(max(0.0, mse * inv[a][a])) for a in range(k + 1)]
-    sy = math.sqrt(sst / (n - 1)); sx = [st.stdev([r[a] for r in xs]) for a in range(k)]
-    return dict(n=n, k=k, b=b, se=se, beta=[None] + [b[a + 1] * sx[a] / sy for a in range(k)],
-                t=[b[a] / se[a] if se[a] else math.inf for a in range(k + 1)], r2=ssr / sst,
-                adj=1 - (sse / dfe) / (sst / (n - 1)), see=math.sqrt(mse), ssr=ssr, sse=sse, sst=sst, dfe=dfe,
-                f=(ssr / k) / mse if mse else math.inf, yhat=yhat, e=e)
+# ---------- format nombor gaya APA ----------
+def fp(p): return "< .001" if p < .001 else ("1.000" if p >= .9995 else f"{p:.3f}"[1:])   # jadual
+def pp(p): return "< .001" if p < .001 else "= " + fp(p)                                    # ayat
+def f2(x): return f"{x:.2f}"
+def nolead(x):  # APA: tiada sifar di depan bagi nilai yang tidak boleh melebihi 1 (r, p)
+    s = f"{x:.2f}"; return s.replace("0.", ".", 1) if abs(x) < 1 else s
+def fmtn(v): return str(int(v)) if float(v).is_integer() else f"{v:.4f}".rstrip("0").rstrip(".")
+def sig(p, a, b): return _(a) if p < .05 else _(b)
 
-def vif(xs):
-    """VIF setiap peramal: 1/(1-R²) bila diregres atas peramal lain."""
-    k = len(xs[0])
-    if k == 1: return [1.0]
-    out = []
-    for j in range(k):
-        m = ols([r[j] for r in xs], [[v for c, v in enumerate(r) if c != j] for r in xs])
-        out.append(None if m is None else (math.inf if m["r2"] >= 1 else 1 / (1 - m["r2"])))
-    return out
+# ---------- blok output (untuk Paparan Output dan eksport HTML) ----------
+class Table:
+    def __init__(self, head, rows): self.head, self.rows = [str(h) for h in head], [[str(x) for x in r] for r in rows]
+    def ascii(self):
+        w = [max(len(h), *(len(r[i]) for r in self.rows)) + 2 if self.rows else len(h) + 2 for i, h in enumerate(self.head)]
+        line = "+" + "+".join("-" * x for x in w) + "+"
+        fmt = lambda r: "|" + "|".join(v.rjust(w[i] - 1) + " " for i, v in enumerate(r)) + "|"
+        return [line, fmt(self.head), line] + [fmt(r) for r in self.rows] + [line]
+    def html(self):
+        e = html.escape
+        # lebar lajur eksplisit: tanpanya LibreOffice/Word membahagi lebar sama rata dan memotong perkataan
+        w = [10 * max(len(h), *(len(r[i]) for r in self.rows)) + 30 if self.rows else 10 * len(h) + 30 for i, h in enumerate(self.head)]
+        if sum(w) > 620: w = [x * 620 // sum(w) for x in w]  # muat dalam lebar halaman A4
+        # border+frame+rules: garisan mendatar gaya APA yang juga difahami LibreOffice/Word (CSS border diabaikan di sana)
+        return (f'<table class="apa" cellpadding="4" width="{sum(w)}" border="1" frame="hsides" rules="groups">' + "".join(f'<col width="{x}">' for x in w) + "<thead><tr>"
+                + "".join(f"<th nowrap>{e(h)}</th>" for h in self.head) + "</tr></thead><tbody>"
+                + "".join("<tr>" + "".join(f"<td nowrap>{e(v)}</td>" for v in r) + "</tr>" for r in self.rows) + "</tbody></table>")
 
-def shapiro(x):
-    """Shapiro-Wilk W dan p (algoritma Royston 1992, 3 <= n <= 5000); None jika tak boleh dikira."""
-    x = sorted(x); n = len(x); N = st.NormalDist()
-    mean = sum(x) / n if n else 0; ss = sum((v - mean) ** 2 for v in x)
-    if n < 3 or n > 5000 or ss == 0: return None
-    if n == 3: a = [-math.sqrt(.5), 0, math.sqrt(.5)]
-    else:
-        m = [N.inv_cdf((i - .375) / (n + .25)) for i in range(1, n + 1)]; mm = sum(v * v for v in m); u = 1 / math.sqrt(n)
-        an = -2.706056*u**5 + 4.434685*u**4 - 2.07119*u**3 - .147981*u**2 + .221157*u + m[-1] / math.sqrt(mm)
-        if n > 5:
-            an1 = -3.582633*u**5 + 5.682633*u**4 - 1.752461*u**3 - .293762*u**2 + .042981*u + m[-2] / math.sqrt(mm)
-            phi = (mm - 2 * m[-1]**2 - 2 * m[-2]**2) / (1 - 2 * an**2 - 2 * an1**2)
-            a = [v / math.sqrt(phi) for v in m]; a[0], a[1], a[-2], a[-1] = -an, -an1, an1, an
-        else:
-            phi = (mm - 2 * m[-1]**2) / (1 - 2 * an**2)
-            a = [v / math.sqrt(phi) for v in m]; a[0], a[-1] = -an, an
-    w = min(sum(ai * xi for ai, xi in zip(a, x)) ** 2 / ss, 1 - 1e-12)
-    if n == 3: return w, max(0.0, 6 / math.pi * (math.asin(math.sqrt(w)) - math.asin(math.sqrt(.75))))
-    if n <= 11:
-        g = -2.273 + .459 * n
-        mu = .544 - .39978 * n + .025054 * n**2 - .0006714 * n**3
-        sig = math.exp(1.3822 - .77857 * n + .062767 * n**2 - .0020322 * n**3)
-        if g - math.log(1 - w) <= 0: return w, 0.0
-        z = (-math.log(g - math.log(1 - w)) - mu) / sig
-    else:
-        ln = math.log(n)
-        mu = .0038915 * ln**3 - .083751 * ln**2 - .31082 * ln - 1.5861
-        sig = math.exp(.0030302 * ln**2 - .082676 * ln - .4803)
-        z = (math.log(1 - w) - mu) / sig
-    return w, 1 - N.cdf(z)
-
-def breusch_pagan(e, xs):
-    """Ujian Breusch-Pagan (versi Koenker): LM = n·R² regresi e² atas X, dk = k."""
-    m = ols([v * v for v in e], xs)
-    return None if m is None else (len(e) * m["r2"], len(xs[0]))
-
-def durbin_watson(e): return sum((e[i] - e[i - 1]) ** 2 for i in range(1, len(e))) / sum(v * v for v in e)
-
-def logit(y, xs, iters=50):
-    """Regresi logistik binari (Newton-Raphson). y: 0/1. None jika tak menumpu (cth. pemisahan sempurna) atau kolinear."""
-    n, k = len(y), len(xs[0]); X = [[1.0] + list(r) for r in xs]; b = [0.0] * (k + 1)
-    prob = lambda b: [1 / (1 + math.exp(-max(-700, min(700, sum(c * v for c, v in zip(b, row)))))) for row in X]
-    for _ in range(iters):
-        p = prob(b)
-        g = [sum((y[i] - p[i]) * X[i][a] for i in range(n)) for a in range(k + 1)]
-        inv = inverse([[sum(p[i] * (1 - p[i]) * X[i][a] * X[i][c] for i in range(n)) for c in range(k + 1)] for a in range(k + 1)])
-        if inv is None: return None
-        step = [sum(inv[a][c] * g[c] for c in range(k + 1)) for a in range(k + 1)]
-        b = [c + s for c, s in zip(b, step)]
-        if max(map(abs, step)) < 1e-8: break
-    else: return None
-    p = prob(b)
-    inv = inverse([[sum(p[i] * (1 - p[i]) * X[i][a] * X[i][c] for i in range(n)) for c in range(k + 1)] for a in range(k + 1)])
-    if inv is None: return None
-    cl = lambda v: min(max(v, 1e-15), 1 - 1e-15)
-    ll = sum(math.log(cl(p[i])) if y[i] else math.log(1 - cl(p[i])) for i in range(n))
-    p0 = sum(y) / n; ll0 = n * (p0 * math.log(p0) + (1 - p0) * math.log(1 - p0))
-    se = [math.sqrt(max(0.0, inv[a][a])) for a in range(k + 1)]
-    cs = 1 - math.exp(2 * (ll0 - ll) / n)
-    return dict(n=n, k=k, b=b, se=se, p=p, ll=ll, chi2=2 * (ll - ll0), cs=cs, nk=cs / (1 - math.exp(2 * ll0 / n)),
-                wald=[(b[a] / se[a]) ** 2 if se[a] else math.inf for a in range(k + 1)])
-
-def anova1(groups):
-    """ANOVA sehala atas senarai kumpulan. Pulangkan (F, dk1, dk2, JKA, JKD) atau None."""
-    allv = [v for g in groups for v in g]; k, n = len(groups), len(allv)
-    if k < 2 or n - k < 1: return None
-    gm, means = sum(allv) / n, [sum(g) / len(g) for g in groups]
-    ssb = sum(len(g) * (m - gm) ** 2 for g, m in zip(groups, means))
-    ssw = sum((v - m) ** 2 for g, m in zip(groups, means) for v in g)
-    if ssw == 0: return None
-    return (ssb / (k - 1)) / (ssw / (n - k)), k - 1, n - k, ssb, ssw
-
-def levene(groups):
-    """Ujian Levene (berasaskan min, seperti SPSS/PSPP): ANOVA atas |x - min kumpulan|."""
-    return anova1([[abs(v - sum(g) / len(g)) for v in g] for g in groups])
-
-def ranks(v):
-    """Pangkat dengan purata untuk nilai seri."""
-    o = sorted(range(len(v)), key=v.__getitem__); r = [0.0] * len(v); i = 0
-    while i < len(o):
-        j = i
-        while j + 1 < len(o) and v[o[j + 1]] == v[o[i]]: j += 1
-        for q in range(i, j + 1): r[o[q]] = (i + j) / 2 + 1
-        i = j + 1
-    return r
-
-def _simpson(f, a, b, m):
-    h = (b - a) / m
-    return (f(a) + f(b) + sum((4 if i % 2 else 2) * f(a + i * h) for i in range(1, m))) * h / 3
-
-def ptukey(q, k, df):
-    """P(Q <= q) bagi taburan julat student (k min, dk df), dengan kamiran berangka."""
-    if q <= 0: return 0.0
-    r2, rpi = math.sqrt(2), math.sqrt(2 * math.pi)
-    Phi = lambda z: .5 * math.erfc(-z / r2)
-    prange = lambda w: k * _simpson(lambda z: math.exp(-z * z / 2) / rpi * (Phi(z) - Phi(z - w)) ** (k - 1), -8, 8, 120)
-    if df > 20000: return min(1.0, prange(q))
-    c = df / 2 * math.log(df) - math.lgamma(df / 2) - (df / 2 - 1) * math.log(2)
-    sd = 1 / math.sqrt(2 * df)
-    dens = lambda s: math.exp(c + (df - 1) * math.log(s) - df * s * s / 2) if s > 0 else 0.0
-    return min(1.0, _simpson(lambda s: dens(s) * prange(q * s), max(0.0, 1 - 10 * sd), 1 + 12 * sd, 100))
-
-def qtukey(p, k, df):
-    """Songsang ptukey (pembahagian dua)."""
-    lo, hi = 0.0, 100.0
-    for _ in range(30):
-        mid = (lo + hi) / 2
-        if ptukey(mid, k, df) < p: lo = mid
-        else: hi = mid
-    return (lo + hi) / 2
-
-def tukey(groups):
-    """Tukey HSD (Tukey-Kramer bagi n tak sama). Pulangkan senarai (i, j, beza, ralat piawai, p, SK95 bawah, atas)."""
-    k, n = len(groups), sum(map(len, groups)); df = n - k
-    means = [sum(g) / len(g) for g in groups]
-    msw = sum((v - m) ** 2 for g, m in zip(groups, means) for v in g) / df
-    qc = qtukey(.95, k, df); out = []
-    for i in range(k):
-        for j in range(k):
-            if i == j: continue
-            se = math.sqrt(msw / 2 * (1 / len(groups[i]) + 1 / len(groups[j]))); d = means[i] - means[j]
-            out.append((i, j, d, se * math.sqrt(2), 1 - ptukey(abs(d) / se, k, df), d - qc * se, d + qc * se))
-    return out
-
-def anova2(y, a, b):
-    """ANOVA dua hala, JK Jenis III (pengekodan kesan). a, b: label faktor bagi setiap kes.
-    Pulangkan dict atau None jika ada sel kosong / data tidak mencukupi."""
-    la, lb = sorted(set(a), key=sortkey), sorted(set(b), key=sortkey)
-    if len(la) < 2 or len(lb) < 2 or len({(x, z) for x, z in zip(a, b)}) < len(la) * len(lb): return None
-    eff = lambda lv, levels: [1.0 if lv == levels[i] else -1.0 if lv == levels[-1] else 0.0 for i in range(len(levels) - 1)]
-    A = [eff(v, la) for v in a]; B = [eff(v, lb) for v in b]; AB = [[p * q for p in ra for q in rb] for ra, rb in zip(A, B)]
-    full = ols(y, [ra + rb + rab for ra, rb, rab in zip(A, B, AB)])
-    if full is None or full["dfe"] < 1: return None
-    terms = {}  # JK Jenis III = JK reja model tanpa sebutan itu - JK reja model penuh
-    for name, keep, df in (("A", (B, AB), len(A[0])), ("B", (A, AB), len(B[0])), ("AB", (A, B), len(AB[0]))):
-        red = ols(y, [r1 + r2 for r1, r2 in zip(*keep)])
-        if red is None: return None
-        terms[name] = (red["sse"] - full["sse"], df)
-    return dict(terms=terms, sse=full["sse"], dfe=full["dfe"], sst=full["sst"], n=full["n"], la=la, lb=lb)
-
-def sortkey(k):
-    try: return (0, float(k.replace(",", ".")), k)
-    except ValueError: return (1, 0, k)
-
-def fp(p): return "< .001" if p < .001 else f"{p:.3f}"
+class Apa(str): pass      # ayat laporan APA
+class Plot(tuple): pass   # (operasi lukisan, lebar, tinggi)
 
 # ---------- rupa Windows 7 ----------
 BG, PANEL, BORDER, SEL = "#F0F0F0", "#DCE6F4", "#A0AFC3", "#CCE8FF"
@@ -249,110 +76,200 @@ def style(root):
     s.configure("Tool.TFrame", background=PANEL)
     s.configure("Status.TLabel", background=PANEL, padding=(6, 2))
 
-# ---------- dialog pilih pemboleh ubah ----------
-class PickDialog(tk.Toplevel):
-    """fields: list of (label, multi, numeric_only)."""
-    def __init__(self, app, title, fields):
-        super().__init__(app.root); self.title(title); self.configure(bg=BG); self.resizable(False, False)
-        self.transient(app.root); self.result = None; self.boxes = []
-        for i, (label, multi, numeric) in enumerate(fields):
-            ttk.Label(self, text=label).grid(row=0, column=i, sticky="w", padx=8, pady=(8, 2))
-            lb = tk.Listbox(self, selectmode="extended" if multi else "browse", exportselection=False,
-                            height=10, width=24, font=FONT, selectbackground=SEL, selectforeground="black")
-            names = [c for c in app.cols if not numeric or app.numeric(c)]
-            for n in names: lb.insert("end", n)
-            lb.grid(row=1, column=i, padx=8); self.boxes.append((lb, names, multi))
-        bar = ttk.Frame(self); bar.grid(row=2, column=0, columnspan=len(fields), sticky="e", padx=8, pady=8)
+# ---------- dialog ----------
+class Dialog(tk.Toplevel):
+    def __init__(self, root, title):
+        super().__init__(root); self.title(title); self.configure(bg=BG); self.resizable(False, False)
+        self.transient(root); self.result = None
+    def buttons(self, **grid):
+        bar = ttk.Frame(self); bar.grid(sticky="e", padx=8, pady=8, **grid)
         ttk.Button(bar, text="OK", command=self.ok).pack(side="left", padx=3)
-        ttk.Button(bar, text="Batal", command=self.destroy).pack(side="left", padx=3)
+        ttk.Button(bar, text=_("Batal"), command=self.destroy).pack(side="left", padx=3)
         self.bind("<Return>", lambda e: self.ok()); self.bind("<Escape>", lambda e: self.destroy())
         self.grab_set(); self.wait_window()
 
+class PickDialog(Dialog):
+    """fields: senarai (label, pilih banyak?, angka sahaja?)."""
+    def __init__(self, app, title, fields):
+        super().__init__(app.root, title); self.boxes = []
+        for i, (label, multi, numeric) in enumerate(fields):
+            ttk.Label(self, text=label).grid(row=0, column=i, sticky="w", padx=8, pady=(8, 2))
+            lb = tk.Listbox(self, selectmode="extended" if multi else "browse", exportselection=False,
+                            height=12, width=24, font=FONT, selectbackground=SEL, selectforeground="black")
+            names = [c for c in app.cols if not numeric or app.numeric(c)]
+            for n in names: lb.insert("end", n)
+            lb.grid(row=1, column=i, padx=8); self.boxes.append((lb, names, multi))
+        if any(m for _l, m, _n in fields):
+            ttk.Label(self, text=_("Tip: Ctrl+klik atau Shift+klik untuk pilih banyak.")).grid(row=2, column=0, columnspan=len(fields), sticky="w", padx=8)
+        self.buttons(row=3, column=0, columnspan=len(fields))
     def ok(self):
         out = []
         for lb, names, multi in self.boxes:
             sel = [names[i] for i in lb.curselection()]
-            if not sel: return messagebox.showwarning("Pilih", "Sila pilih pemboleh ubah.", parent=self)
+            if not sel: return messagebox.showwarning(_("Pilih"), _("Sila pilih pemboleh ubah."), parent=self)
             out.append(sel if multi else sel[0])
         self.result = out; self.destroy()
 
-class GroupDialog(tk.Toplevel):
-    """Pilih tepat 2 kumpulan daripada nilai pemboleh ubah kumpulan (seperti 'Define Groups' PSPP)."""
+class FormDialog(Dialog):
+    """fields: ("entry", label, lalai) atau ("radio", label, [pilihan], indeks lalai). Hasil: senarai nilai."""
+    def __init__(self, app, title, fields):
+        super().__init__(app.root, title); self.vars = []
+        for i, f in enumerate(fields):
+            ttk.Label(self, text=f[1]).grid(row=i, column=0, sticky="nw", padx=8, pady=6)
+            if f[0] == "entry":
+                v = tk.StringVar(value=f[2]); e = ttk.Entry(self, textvariable=v, width=30); e.grid(row=i, column=1, padx=8, pady=6)
+                if i == 0: e.focus()
+            else:
+                v = tk.IntVar(value=f[3]); fr = ttk.Frame(self); fr.grid(row=i, column=1, sticky="w", padx=8, pady=6)
+                for j, o in enumerate(f[2]): ttk.Radiobutton(fr, text=o, variable=v, value=j).pack(anchor="w")
+            self.vars.append(v)
+        self.buttons(row=len(fields), column=0, columnspan=2)
+    def ok(self): self.result = [v.get() for v in self.vars]; self.destroy()
+
+class GroupDialog(Dialog):
+    """Pilih tepat 2 kumpulan (seperti 'Define Groups' PSPP)."""
     def __init__(self, root, var, groups):
-        super().__init__(root); self.title("Pilih 2 Kumpulan"); self.configure(bg=BG); self.resizable(False, False)
-        self.transient(root); self.result = None
-        self.keys = sorted(groups, key=lambda k: (App.num(k) is None, App.num(k) or 0, k))
-        ttk.Label(self, text=f"'{var}' ada {len(self.keys)} kumpulan.\nKlik 2 kumpulan untuk dibandingkan:").pack(anchor="w", padx=8, pady=(8, 2))
+        super().__init__(root, _("Pilih 2 Kumpulan"))
+        self.keys = sorted(groups, key=sortkey)
+        ttk.Label(self, text=_("'{v}' ada {k} kumpulan.\nKlik 2 kumpulan untuk dibandingkan:", v=var, k=len(self.keys))).grid(row=0, sticky="w", padx=8, pady=(8, 2))
         self.lb = tk.Listbox(self, selectmode="multiple", exportselection=False, height=min(12, len(self.keys)), width=30,
                              font=FONT, selectbackground=SEL, selectforeground="black")
-        for k in self.keys: self.lb.insert("end", f"{k}   ({len(groups[k])} kes)")
-        self.lb.pack(padx=8)
-        bar = ttk.Frame(self); bar.pack(anchor="e", padx=8, pady=8)
-        ttk.Button(bar, text="OK", command=self.ok).pack(side="left", padx=3)
-        ttk.Button(bar, text="Batal", command=self.destroy).pack(side="left", padx=3)
-        self.bind("<Return>", lambda e: self.ok()); self.bind("<Escape>", lambda e: self.destroy())
-        self.grab_set(); self.wait_window()
-
+        for k in self.keys: self.lb.insert("end", _("{k}   ({n} kes)", k=k, n=len(groups[k])))
+        self.lb.grid(row=1, padx=8)
+        self.buttons(row=2, column=0)
     def ok(self):
         sel = self.lb.curselection()
-        if len(sel) != 2: return messagebox.showwarning("Pilih", f"Sila pilih tepat 2 kumpulan (dipilih: {len(sel)}).", parent=self)
+        if len(sel) != 2: return messagebox.showwarning(_("Pilih"), _("Sila pilih tepat 2 kumpulan (dipilih: {n}).", n=len(sel)), parent=self)
         self.result = [self.keys[i] for i in sel]; self.destroy()
+
+# ---------- plot: satu senarai operasi, dilukis ke Canvas dan ke SVG ----------
+def plot_ops(title, xs, ys, xl, yl, ref, W=380, H=280):
+    L, B = 50, 40
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    if ref == "diag": x0 = y0 = min(x0, y0); x1 = y1 = max(x1, y1)
+    if ref == "zero": y0, y1 = min(y0, 0), max(y1, 0)
+    x1, y1 = (x1 if x1 > x0 else x0 + 1), (y1 if y1 > y0 else y0 + 1)
+    px = lambda v: L + (v - x0) / (x1 - x0) * (W - L - 15); py = lambda v: H - B - (v - y0) / (y1 - y0) * (H - B - 30)
+    ops = [("text", W / 2, 12, title, "center", 0, True), ("rect", L, 30, W - 15, H - B)]
+    ops += [("text", px(v), H - B + 10, f"{v:.3g}", "center", 0, False) for v in (x0, x1)]
+    ops += [("text", L - 4, py(v), f"{v:.3g}", "e", 0, False) for v in (y0, y1)]
+    ops += [("text", W / 2, H - 10, xl, "center", 0, False), ("text", 12, H / 2 - B / 2, yl, "center", 90, False)]
+    ops.append(("line", L, py(0), W - 15, py(0)) if ref == "zero" else ("line", px(x0), py(x0), px(x1), py(x1)))
+    ops += [("dot", px(x), py(y)) for x, y in zip(xs, ys)]
+    return Plot((ops, W, H))
+
+def draw_canvas(c, ops):
+    for o in ops:
+        if o[0] == "text": c.create_text(o[1], o[2], text=o[3], anchor={"center": "center", "e": "e"}[o[4]], angle=o[5],
+                                         font=("DejaVu Sans", 9, "bold") if o[6] else FONT, fill="#1E3A8A" if o[6] else "black")
+        elif o[0] == "rect": c.create_rectangle(*o[1:], outline="#888")
+        elif o[0] == "line": c.create_line(*o[1:], fill="#C0392B", dash=(4, 2))
+        else: c.create_oval(o[1] - 3, o[2] - 3, o[1] + 3, o[2] + 3, fill="#3C7FB1", outline="#1E3A8A")
+
+def svg(ops, W, H):
+    e = html.escape; out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" font-family="DejaVu Sans, Arial" font-size="11"><rect width="{W}" height="{H}" fill="white"/>']
+    for o in ops:
+        if o[0] == "text":
+            anc = {"center": "middle", "e": "end"}[o[4]]; rot = f' transform="rotate(-{o[5]} {o[1]:.1f} {o[2]:.1f})"' if o[5] else ""
+            out.append(f'<text x="{o[1]:.1f}" y="{o[2] + 4:.1f}" text-anchor="{anc}"{rot}{" font-weight=\"bold\"" if o[6] else ""}>{e(o[3])}</text>')
+        elif o[0] == "rect": out.append(f'<rect x="{o[1]}" y="{o[2]}" width="{o[3] - o[1]}" height="{o[4] - o[2]}" fill="none" stroke="#888"/>')
+        elif o[0] == "line": out.append(f'<line x1="{o[1]:.1f}" y1="{o[2]:.1f}" x2="{o[3]:.1f}" y2="{o[4]:.1f}" stroke="#C0392B" stroke-dasharray="4 2"/>')
+        else: out.append(f'<circle cx="{o[1]:.1f}" cy="{o[2]:.1f}" r="3" fill="#3C7FB1" stroke="#1E3A8A"/>')
+    return "".join(out) + "</svg>"
+
+HTML_HEAD = """<!doctype html><html><head><meta charset="utf-8"><title>StatMudah Output</title><style>
+body{font-family:"Times New Roman",serif;font-size:12pt;color:#000;background:#fff}
+@media screen{body{max-width:900px;margin:24px auto;padding:0 16px}}
+h2{font-size:12pt;font-weight:bold;margin:28px 0 8px}
+table.apa{border-collapse:collapse;margin:8px 0 12px}
+table.apa th{border-top:1.5px solid #000;border-bottom:1px solid #000;font-weight:normal;text-align:center;white-space:nowrap;padding:0}
+table.apa td{text-align:center;white-space:nowrap;padding:0}
+table.apa tbody tr:last-child td{border-bottom:1.5px solid #000}
+p.apa{background:#F3F7FB;border-left:3px solid #3C7FB1;padding:6px 10px}
+</style></head><body>
+"""
 
 # ---------- aplikasi ----------
 class App:
+    missing = set()   # kod data hilang (cth. "99") - dianggap kosong dalam semua analisis
+
     def __init__(self, root):
-        self.root, self.cols, self.rows, self.path = root, [], [], None
-        root.title("StatMudah"); root.geometry("960x620"); root.configure(bg=BG); style(root)
-        self.menu(); self.toolbar()
+        self.root, self.cols, self.rows, self.path, self.blocks = root, [], [], None, []
+        root.title("StatMudah"); root.geometry("1000x650"); root.configure(bg=BG); style(root)
+        self.menu(); self.tb = None; self.toolbar()
         self.status = ttk.Label(root, style="Status.TLabel"); self.status.pack(fill="x", side="bottom")
         self.nb = ttk.Notebook(root); self.nb.pack(fill="both", expand=True, padx=4, pady=2)
-        f = ttk.Frame(self.nb); self.nb.add(f, text="  Paparan Data  ")
+        f = ttk.Frame(self.nb); self.nb.add(f)
         self.tree = ttk.Treeview(f, show="headings", selectmode="browse")
         ys, xs = ttk.Scrollbar(f, command=self.tree.yview), ttk.Scrollbar(f, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=ys.set, xscrollcommand=xs.set)
         ys.pack(side="right", fill="y"); xs.pack(side="bottom", fill="x"); self.tree.pack(fill="both", expand=True)
         self.tree.bind("<Double-1>", self.edit_cell)
-        o = ttk.Frame(self.nb); self.nb.add(o, text="  Paparan Output  ")
+        o = ttk.Frame(self.nb); self.nb.add(o)
         self.out = tk.Text(o, font=("DejaVu Sans Mono", 10), wrap="none", bg="white", relief="flat")
         oy = ttk.Scrollbar(o, command=self.out.yview); self.out.configure(yscrollcommand=oy.set)
         oy.pack(side="right", fill="y"); self.out.pack(fill="both", expand=True)
         self.out.tag_configure("h", font=("DejaVu Sans", 11, "bold"), foreground="#1E3A8A")
-        self.new(sample=True)
+        self.out.tag_configure("apa", font=("DejaVu Sans", 10), foreground="#14532D", background="#ECFDF3", lmargin1=6, lmargin2=6, wrap="word")
+        self.tabs(); self.new(sample=True)
+
+    def tabs(self):
+        self.nb.tab(0, text=_("  Paparan Data  ")); self.nb.tab(1, text=_("  Paparan Output  "))
 
     def menu(self):
         m = tk.Menu(self.root, bg=BG, font=FONT, relief="flat"); self.root.config(menu=m)
-        def sub(name, items):
-            s = tk.Menu(m, tearoff=0, bg="white", font=FONT, activebackground=SEL, activeforeground="black")
+        mk = lambda parent: tk.Menu(parent, tearoff=0, bg="white", font=FONT, activebackground=SEL, activeforeground="black")
+        def fill(menu, items):
             for it in items:
-                s.add_separator() if it is None else s.add_command(label=it[0], command=it[1], accelerator=it[2] if len(it) > 2 else "")
-            m.add_cascade(label=name, menu=s)
-        sub("Fail", [("Baru", self.new, "Ctrl+N"), ("Buka CSV...", self.open, "Ctrl+O"), ("Simpan", self.save, "Ctrl+S"),
-                     ("Simpan Sebagai...", lambda: self.save(True)), None, ("Simpan Output...", self.save_output), None, ("Keluar", self.root.quit)])
-        sub("Edit", [("Tambah Baris", self.add_row), ("Tambah Pemboleh Ubah", self.add_col),
-                     ("Namakan Semula Pemboleh Ubah", self.rename_col), None, ("Padam Baris Dipilih", self.del_row),
-                     ("Padam Pemboleh Ubah", self.del_col), None, ("Kosongkan Output", lambda: self.out.delete("1.0", "end"))])
-        sub("Analisis", [("Statistik Deskriptif...", self.descriptives), ("Frekuensi...", self.frequencies), None,
-                         ("Korelasi Pearson...", self.correlation), ("Korelasi Spearman...", lambda: self.correlation(True)), ("Ujian-t Sampel Bebas...", self.ttest),
-                         ("Ujian-t Berpasangan...", self.paired), ("ANOVA Sehala...", self.anova), ("ANOVA Dua Hala...", self.anova2), ("Khi Kuasa Dua...", self.chisq), None,
-                         ("Regresi Linear...", self.regression), ("Regresi Logistik (Binari)...", self.logistic)])
-        sub("Bantuan", [("Cara Guna", self.help), ("Perihal", lambda: messagebox.showinfo("Perihal", "StatMudah 1.0\nAnalisis statistik mudah."))])
+                if it is None: menu.add_separator()
+                elif isinstance(it[1], list): s = mk(menu); fill(s, it[1]); menu.add_cascade(label=it[0], menu=s)
+                else: menu.add_command(label=it[0], command=it[1], accelerator=it[2] if len(it) > 2 else "")
+        def sub(name, items): s = mk(m); fill(s, items); m.add_cascade(label=name, menu=s)
+        sub(_("Fail"), [(_("Baru"), self.new, "Ctrl+N"), (_("Buka CSV / Excel..."), self.open, "Ctrl+O"), (_("Simpan"), self.save, "Ctrl+S"),
+                        (_("Simpan Sebagai..."), lambda: self.save(True)), None,
+                        (_("Eksport Output ke HTML (untuk Word)..."), self.export_html), (_("Simpan Output sebagai Teks..."), self.save_output),
+                        None, (_("Keluar"), self.root.quit)])
+        sub(_("Edit"), [(_("Tambah Baris"), self.add_row), (_("Tambah Pemboleh Ubah"), self.add_col),
+                        (_("Namakan Semula Pemboleh Ubah"), self.rename_col), None, (_("Padam Baris Dipilih"), self.del_row),
+                        (_("Padam Pemboleh Ubah"), self.del_col), None, (_("Kosongkan Output"), self.clear_output)])
+        sub(_("Data"), [(_("Songsangkan Item (Kod Semula)..."), self.reverse_items), (_("Kira Pemboleh Ubah (Skor Konstruk)..."), self.compute), None,
+                        (_("Analisis Data Hilang..."), self.missing_report), (_("Kod Data Hilang..."), self.missing_codes), None,
+                        (_("Cari Kes Berulang..."), self.duplicates), (_("Semak Julat Sah..."), self.range_check)])
+        sub(_("Analisis"), [(_("Statistik Deskriptif & Normaliti..."), self.descriptives), (_("Frekuensi..."), self.frequencies), None,
+                            (_("Korelasi Pearson..."), self.correlation), (_("Korelasi Spearman..."), lambda: self.correlation(True)), None,
+                            (_("Ujian-t Sampel Bebas..."), self.ttest), (_("Ujian-t Berpasangan..."), self.paired),
+                            (_("ANOVA Sehala..."), self.anova), (_("ANOVA Dua Hala..."), self.anova2), (_("Khi Kuasa Dua..."), self.chisq), None,
+                            (_("Ujian Bukan Parametrik"), [(_("Mann-Whitney U (2 kumpulan bebas)..."), self.mannwhitney),
+                                                           (_("Wilcoxon (2 ukuran berpasangan)..."), self.wilcoxon),
+                                                           (_("Kruskal-Wallis (≥3 kumpulan)..."), self.kruskal)]), None,
+                            (_("Regresi Linear..."), self.regression), (_("Regresi Logistik (Binari)..."), self.logistic)])
+        sub(_("Bantuan"), [(_("Cara Guna"), self.help), (_("Bahasa / Language"), [("Bahasa Melayu", lambda: self.set_lang("ms")), ("English", lambda: self.set_lang("en"))]),
+                           (_("Perihal"), lambda: messagebox.showinfo(_("Perihal"), _("StatMudah {v}\nAnalisis statistik mudah.", v=VERSION)))])
         for k, f in (("n", self.new), ("o", self.open), ("s", self.save)): self.root.bind(f"<Control-{k}>", lambda e, f=f: f())
 
     def toolbar(self):
-        tb = ttk.Frame(self.root, style="Tool.TFrame"); tb.pack(fill="x")
-        for t, c in (("📄 Baru", self.new), ("📂 Buka", self.open), ("💾 Simpan", self.save), ("|", 0),
-                     ("➕ Baris", self.add_row), ("➕ Pemboleh Ubah", self.add_col), ("|", 0),
-                     ("Σ Deskriptif", self.descriptives), ("📊 Frekuensi", self.frequencies), ("t Ujian-t", self.ttest), ("❓ Bantuan", self.help)):
+        if self.tb: self.tb.destroy()
+        self.tb = tb = ttk.Frame(self.root, style="Tool.TFrame")
+        tb.pack(fill="x", **({"before": self.nb} if hasattr(self, "nb") else {}))
+        for t, c in ((_("📄 Baru"), self.new), (_("📂 Buka"), self.open), (_("💾 Simpan"), self.save), ("|", 0),
+                     (_("➕ Baris"), self.add_row), (_("➕ Pemboleh Ubah"), self.add_col), ("|", 0),
+                     (_("Σ Deskriptif"), self.descriptives), (_("📊 Frekuensi"), self.frequencies), (_("t Ujian-t"), self.ttest),
+                     (_("📝 Eksport"), self.export_html), (_("❓ Bantuan"), self.help)):
             if t == "|": ttk.Separator(tb, orient="vertical").pack(side="left", fill="y", padx=4, pady=3)
             else: ttk.Button(tb, text=t, style="Tool.TButton", width=0, command=c).pack(side="left", padx=1, pady=2)
+
+    def set_lang(self, lang):
+        SET["lang"] = lang; save_settings(); self.menu(); self.toolbar(); self.tabs(); self.refresh()
 
     # ----- data -----
     def refresh(self):
         self.tree.delete(*self.tree.get_children()); self.tree["columns"] = ["#"] + self.cols
         self.tree.heading("#", text="#"); self.tree.column("#", width=45, anchor="e", stretch=False)
-        for c in self.cols: self.tree.heading(c, text=c); self.tree.column(c, width=110, anchor="e")
+        for c in self.cols: self.tree.heading(c, text=c); self.tree.column(c, width=90, anchor="e")
         for i, r in enumerate(self.rows): self.tree.insert("", "end", iid=str(i), values=[i + 1] + r)
-        self.status["text"] = f"  {self.path or 'Tanpa nama'}   |   {len(self.rows)} kes   |   {len(self.cols)} pemboleh ubah   |   Dwiklik sel untuk edit"
+        codes = _("   |   Kod hilang: {c}", c=", ".join(sorted(App.missing))) if App.missing else ""
+        self.status["text"] = _("  {p}   |   {n} kes   |   {k} pemboleh ubah{c}   |   Dwiklik sel untuk edit",
+                                p=self.path or _("Tanpa nama"), n=len(self.rows), k=len(self.cols), c=codes)
 
     def new(self, sample=False):
         self.path = None
@@ -361,34 +278,58 @@ class App:
             self.rows = [[g, str(a), str(m1), str(m2)] for g, a, m1, m2 in [
                 ("L", 21, 65, 70), ("P", 22, 78, 80), ("L", 20, 55, 61), ("P", 23, 88, 85), ("L", 24, 72, 75),
                 ("P", 21, 81, 86), ("L", 22, 60, 66), ("P", 20, 92, 90), ("L", 23, 68, 72), ("P", 22, 75, 79)]]
-        else: self.cols, self.rows = ["var1", "var2"], [["", ""] for _ in range(5)]
+        else: self.cols, self.rows = ["var1", "var2"], [["", ""] for _i in range(5)]
         self.refresh()
 
     def open(self):
-        p = filedialog.askopenfilename(filetypes=[("CSV", "*.csv"), ("Semua", "*")])
+        p = filedialog.askopenfilename(filetypes=[(_("Data (CSV, Excel)"), "*.csv *.xlsx"), ("CSV", "*.csv"), ("Excel", "*.xlsx"), (_("Semua"), "*")])
         if not p: return
         try:
-            with open(p, newline="", encoding="utf-8-sig") as f: data = list(csv.reader(f))
-        except (OSError, UnicodeDecodeError, csv.Error) as e: return messagebox.showerror("Ralat", str(e))
-        if not data: return messagebox.showerror("Ralat", "Fail kosong.")
-        self.cols = [c or f"var{i+1}" for i, c in enumerate(data[0])]
-        self.rows = [(r + [""] * len(self.cols))[:len(self.cols)] for r in data[1:]]
+            if p.lower().endswith(".xlsx"): data = read_xlsx(p)
+            else:
+                with open(p, newline="", encoding="utf-8-sig") as f: data = list(csv.reader(f))
+        except Exception as e:  # fail rosak/tidak disokong: beritahu pengguna, jangan tutup aplikasi
+            return messagebox.showerror(_("Ralat"), _("Fail tidak dapat dibaca:\n{e}", e=e))
+        data = [r for r in data if any(c.strip() for c in r)]
+        if not data: return messagebox.showerror(_("Ralat"), _("Fail kosong."))
+        self.cols = [c.strip() or f"var{i+1}" for i, c in enumerate(data[0])]
+        self.rows = [[c.strip() for c in (r + [""] * len(self.cols))[:len(self.cols)]] for r in data[1:]]
         self.path = p; self.refresh()
 
     def save(self, as_new=False):
-        if as_new or not self.path:
+        if as_new or not self.path or self.path.lower().endswith(".xlsx"):  # .xlsx tidak ditulis semula; simpan sebagai CSV
             p = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")])
             if not p: return
             self.path = p
         try:
             with open(self.path, "w", newline="", encoding="utf-8") as f: csv.writer(f).writerows([self.cols] + self.rows)
-        except OSError as e: return messagebox.showerror("Ralat", str(e))
+        except OSError as e: return messagebox.showerror(_("Ralat"), str(e))
         self.refresh()
 
     def save_output(self):
-        p = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Teks", "*.txt")])
+        p = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[(_("Teks"), "*.txt")])
         if p:
             with open(p, "w", encoding="utf-8") as f: f.write(self.out.get("1.0", "end"))
+
+    def export_html(self):
+        if not self.blocks: return messagebox.showinfo(_("Eksport"), _("Tiada output untuk dieksport. Jalankan analisis dahulu."))
+        p = filedialog.asksaveasfilename(defaultextension=".html", filetypes=[("HTML", "*.html")])
+        if not p: return
+        body = []
+        for b in self.blocks:
+            if isinstance(b, tuple) and b[0] == "h": body.append(f"<h2>{html.escape(b[1])}</h2>")
+            elif isinstance(b, Table): body.append(b.html())
+            elif isinstance(b, Apa): body.append(f'<p class="apa">{html.escape(b)}</p>')
+            elif isinstance(b, Plot):
+                data = base64.b64encode(svg(*b).encode()).decode()
+                body.append(f'<img src="data:image/svg+xml;base64,{data}" width="{b[1]}" height="{b[2]}" alt="plot"> ')
+            elif b: body.append(f"<p>{html.escape(b)}</p>")
+        try:
+            with open(p, "w", encoding="utf-8") as f: f.write(HTML_HEAD + "\n".join(body) + "\n</body></html>\n")
+        except OSError as e: return messagebox.showerror(_("Ralat"), str(e))
+        messagebox.showinfo(_("Eksport"), _("Output disimpan:\n{p}\n\nBuka dalam pelayar atau LibreOffice/Word, kemudian salin jadual ke tesis.", p=p))
+
+    def clear_output(self): self.out.delete("1.0", "end"); self.blocks = []
 
     def edit_cell(self, e):
         row, col = self.tree.identify_row(e.y), self.tree.identify_column(e.x)
@@ -397,33 +338,36 @@ class App:
         x, y, w, h = self.tree.bbox(row, col)
         ent = ttk.Entry(self.tree); ent.insert(0, self.rows[int(row)][ci]); ent.select_range(0, "end")
         ent.place(x=x, y=y, width=w, height=h); ent.focus()
-        def done(_=None):
+        def done(ev=None):
             self.rows[int(row)][ci] = ent.get().strip(); ent.destroy()
             self.tree.item(row, values=[int(row) + 1] + self.rows[int(row)])
-        ent.bind("<Return>", done); ent.bind("<FocusOut>", done); ent.bind("<Escape>", lambda _: ent.destroy())
+        ent.bind("<Return>", done); ent.bind("<FocusOut>", done); ent.bind("<Escape>", lambda ev: ent.destroy())
 
     def add_row(self): self.rows.append([""] * len(self.cols)); self.refresh(); self.tree.see(str(len(self.rows) - 1))
     def add_col(self):
-        n = simpledialog.askstring("Pemboleh Ubah Baru", "Nama pemboleh ubah:", parent=self.root)
+        n = simpledialog.askstring(_("Pemboleh Ubah Baru"), _("Nama pemboleh ubah:"), parent=self.root)
         if n and n not in self.cols: self.cols.append(n); [r.append("") for r in self.rows]; self.refresh()
     def rename_col(self):
         if not self.cols: return
-        old = simpledialog.askstring("Namakan Semula", f"Nama lama ({', '.join(self.cols)}):", parent=self.root)
-        if old not in self.cols: return
-        new = simpledialog.askstring("Namakan Semula", "Nama baru:", parent=self.root)
-        if new and new not in self.cols: self.cols[self.cols.index(old)] = new; self.refresh()
+        r = PickDialog(self, _("Namakan Semula"), [(_("Pemboleh ubah:"), False, False)]).result
+        if not r: return
+        new = simpledialog.askstring(_("Namakan Semula"), _("Nama baru:"), parent=self.root, initialvalue=r[0])
+        if new and new not in self.cols: self.cols[self.cols.index(r[0])] = new; self.refresh()
     def del_row(self):
         s = self.tree.selection()
-        if s and messagebox.askyesno("Padam", "Padam baris dipilih?"): del self.rows[int(s[0])]; self.refresh()
+        if s and messagebox.askyesno(_("Padam"), _("Padam baris dipilih?")): del self.rows[int(s[0])]; self.refresh()
     def del_col(self):
-        r = PickDialog(self, "Padam Pemboleh Ubah", [("Pemboleh ubah:", True, False)]).result
-        if r and messagebox.askyesno("Padam", f"Padam {', '.join(r[0])}?"):
+        r = PickDialog(self, _("Padam Pemboleh Ubah"), [(_("Pemboleh ubah:"), True, False)]).result
+        if r and messagebox.askyesno(_("Padam"), _("Padam {v}?", v=", ".join(r[0]))):
             keep = [i for i, c in enumerate(self.cols) if c not in r[0]]
             self.cols = [self.cols[i] for i in keep]; self.rows = [[x[i] for i in keep] for x in self.rows]; self.refresh()
 
     # ----- helper analisis -----
     @staticmethod
+    def blank(v): return v.strip() == "" or v.strip() in App.missing
+    @staticmethod
     def num(v):
+        if App.blank(v): return None
         try: return float(v.replace(",", "."))
         except ValueError: return None
     def values(self, c):
@@ -432,263 +376,462 @@ class App:
     def pairs(self, a, b):
         i, j = self.cols.index(a), self.cols.index(b)
         return [(x, y) for x, y in ((self.num(r[i]), self.num(r[j])) for r in self.rows) if x is not None and y is not None]
-
-    def write(self, title, lines):
-        self.out.insert("end", title + "\n", "h"); self.out.insert("end", "\n".join(lines) + "\n\n")
-        self.out.see("end"); self.nb.select(1)
-
-    def table(self, head, rows):
-        rows = [[str(x) for x in r] for r in rows]; w = [max(len(str(h)), *(len(r[i]) for r in rows)) + 2 for i, h in enumerate(head)]
-        line = "+" + "+".join("-" * x for x in w) + "+"
-        fmt = lambda r: "|" + "|".join(str(v).rjust(w[i] - 1) + " " for i, v in enumerate(r)) + "|"
-        return [line, fmt(head), line] + [fmt(r) for r in rows] + [line]
-
-    # ----- analisis -----
-    def descriptives(self):
-        r = PickDialog(self, "Statistik Deskriptif", [("Pemboleh ubah (angka):", True, True)]).result
-        if not r: return
-        rows = []
-        for c in r[0]:
-            v = self.values(c); sd = st.stdev(v) if len(v) > 1 else 0
-            rows.append([c, len(v), f"{st.mean(v):.3f}", f"{st.median(v):.3f}", f"{sd:.3f}", f"{min(v):g}", f"{max(v):g}"])
-        self.write("Statistik Deskriptif", self.table(["Pemboleh ubah", "N", "Min", "Median", "SP", "Minimum", "Maksimum"], rows))
-
-    def frequencies(self):
-        r = PickDialog(self, "Frekuensi", [("Pemboleh ubah:", True, False)]).result
-        if not r: return
-        for c in r[0]:
-            i = self.cols.index(c); cnt = Counter(x[i] for x in self.rows if x[i] != ""); n = sum(cnt.values()); cum = 0; rows = []
-            for k, f in sorted(cnt.items(), key=lambda kv: (self.num(kv[0]) is None, self.num(kv[0]) or 0, kv[0])):
-                cum += f; rows.append([k, f, f"{100*f/n:.1f}", f"{100*cum/n:.1f}"])
-            rows.append(["Jumlah", n, "100.0", ""])
-            self.write(f"Frekuensi: {c}", self.table(["Nilai", "Frekuensi", "Peratus", "Peratus Kumulatif"], rows))
-
-    def correlation(self, spearman=False):
-        name = "Korelasi Spearman" if spearman else "Korelasi Pearson"
-        r = PickDialog(self, name, [("Pemboleh ubah (pilih ≥2):", True, True)]).result
-        if not r: return
-        vs = r[0]
-        if len(vs) < 2: return messagebox.showwarning("Korelasi", "Pilih sekurang-kurangnya 2 pemboleh ubah.")
-        rows = []
-        for a in range(len(vs)):
-            for b in range(a + 1, len(vs)):
-                p = self.pairs(vs[a], vs[b]); n = len(p)
-                if n < 3: rows.append([vs[a], vs[b], n, "-", "-"]); continue
-                xs, ys = [x for x, _ in p], [y for _, y in p]
-                if spearman: xs, ys = ranks(xs), ranks(ys)  # Spearman = Pearson atas pangkat
-                try: rr = st.correlation(xs, ys)
-                except st.StatisticsError: rows.append([vs[a], vs[b], n, "-", "-"]); continue
-                t = rr * math.sqrt((n - 2) / max(1e-15, 1 - rr * rr))
-                rows.append([vs[a], vs[b], n, f"{rr:.3f}", fp(p_t(t, n - 2))])
-        self.write(name, self.table(["Pemboleh ubah 1", "Pemboleh ubah 2", "N", "rho" if spearman else "r", "Sig. (2-hujung)"], rows))
-
     def groups(self, dep, grp):
         i, j = self.cols.index(dep), self.cols.index(grp); g = {}
         for row in self.rows:
             v = self.num(row[i])
-            if v is not None and row[j] != "": g.setdefault(row[j], []).append(v)
+            if v is not None and not self.blank(row[j]): g.setdefault(row[j].strip(), []).append(v)
+        return dict(sorted(g.items(), key=lambda kv: sortkey(kv[0])))
+    def two_groups(self, title, dep, grp):
+        """Kumpulan untuk ujian 2 kumpulan; minta pengguna pilih jika ada > 2. None jika batal/tidak sah."""
+        g = self.groups(dep, grp)
+        if len(g) < 2:
+            messagebox.showwarning(title, _("Pemboleh ubah kumpulan perlu sekurang-kurangnya 2 kumpulan (ada {n}: {v}).", n=len(g), v=", ".join(g) or "-")); return None
+        if len(g) > 2:
+            pick = GroupDialog(self.root, grp, g).result
+            if not pick: return None
+            g = {k: g[k] for k in pick}
         return g
+    def case_id(self, i): return _("baris {n}", n=i + 1) + (f" ({self.cols[0]}={self.rows[i][0]})" if self.cols else "")
+
+    def table(self, head, rows): return [Table(head, rows)]
+    def apa(self, s): return [Apa(_("Laporan APA (salin & sunting): ") + s)]
+
+    def write(self, title, items):
+        self.blocks.append(("h", title)); self.out.insert("end", title + "\n", "h")
+        for it in items:
+            self.blocks.append(it)
+            if isinstance(it, Table): self.out.insert("end", "\n".join(it.ascii()) + "\n")
+            elif isinstance(it, Apa): self.out.insert("end", it + "\n", "apa")
+            elif isinstance(it, Plot):
+                c = tk.Canvas(self.out, width=it[1], height=it[2], bg="white", highlightthickness=1, highlightbackground=BORDER)
+                draw_canvas(c, it[0]); self.out.window_create("end", window=c, padx=4, pady=4)
+            else: self.out.insert("end", it + "\n")
+        self.out.insert("end", "\n"); self.out.see("end"); self.nb.select(1)
+
+    # ----- menu Data -----
+    def reverse_items(self):
+        r = PickDialog(self, _("Songsangkan Item"), [(_("Item untuk disongsangkan:"), True, True)]).result
+        if not r: return
+        vals = [v for c in r[0] for v in self.values(c)]
+        f = FormDialog(self, _("Songsangkan Item"), [("entry", _("Nilai minimum skala:"), fmtn(min(vals))), ("entry", _("Nilai maksimum skala:"), fmtn(max(vals)))]).result
+        if not f: return
+        lo, hi = self.num(f[0]), self.num(f[1])
+        if lo is None or hi is None or lo >= hi: return messagebox.showwarning(_("Songsangkan Item"), _("Minimum dan maksimum mesti nombor, dan minimum < maksimum."))
+        made, skipped, bad = [], [], 0
+        for c in r[0]:
+            new = c + "_r"
+            if new in self.cols: skipped.append(new); continue
+            i = self.cols.index(c); self.cols.append(new)
+            for row in self.rows:
+                v = self.num(row[i])
+                if v is not None and lo <= v <= hi: row.append(fmtn(lo + hi - v))
+                else: row.append(""); bad += v is not None  # nilai luar julat tidak disongsangkan
+            made.append(new)
+        self.refresh()
+        out = [_("Formula: baru = {s} − lama. Item asal tidak diubah.", s=fmtn(lo + hi)), _("Pemboleh ubah baru: {v}", v=", ".join(made) or "-")]
+        if skipped: out.append(_("Sudah wujud (tidak ditulis semula): {v}", v=", ".join(skipped)))
+        if bad: out.append(_("AMARAN: {n} nilai di luar julat {lo}–{hi} dibiarkan kosong. Semak dengan Data > Semak Julat Sah.", n=bad, lo=fmtn(lo), hi=fmtn(hi)))
+        self.write(_("Songsangkan Item"), out)
+
+    def compute(self):
+        r = PickDialog(self, _("Kira Pemboleh Ubah"), [(_("Item:"), True, True)]).result
+        if not r: return
+        f = FormDialog(self, _("Kira Pemboleh Ubah"), [("entry", _("Nama pemboleh ubah baru:"), ""), ("radio", _("Kaedah:"), [_("Min item"), _("Jumlah item")], 0)]).result
+        if not f: return
+        name = f[0].strip()
+        if not name or name in self.cols: return messagebox.showwarning(_("Kira Pemboleh Ubah"), _("Nama kosong atau sudah wujud."))
+        idx = [self.cols.index(c) for c in r[0]]; self.cols.append(name); blanks = 0
+        for row in self.rows:
+            v = [self.num(row[i]) for i in idx]
+            if None in v: row.append(""); blanks += 1   # ada item hilang: skor dibiarkan kosong
+            else: row.append(fmtn(sum(v) / len(v) if f[1] == 0 else sum(v)))
+        self.refresh()
+        self.write(_("Kira Pemboleh Ubah"), [_("{n} = {m} ({v})", n=name, m=_("min") if f[1] == 0 else _("jumlah"), v=", ".join(r[0])),
+                                            _("{k} kes dibiarkan kosong kerana ada item yang hilang.", k=blanks)])
+
+    def missing_report(self):
+        r = PickDialog(self, _("Analisis Data Hilang"), [(_("Pemboleh ubah:"), True, False)]).result
+        if not r: return
+        idx = [self.cols.index(c) for c in r[0]]; n = len(self.rows)
+        rows = [[c, n - sum(self.blank(x[i]) for x in self.rows), sum(self.blank(x[i]) for x in self.rows),
+                 f"{100 * sum(self.blank(x[i]) for x in self.rows) / n:.1f}" if n else "-"] for c, i in zip(r[0], idx)]
+        bad = [k for k, row in enumerate(self.rows) if any(self.blank(row[i]) for i in idx)]
+        out = self.table([_("Pemboleh ubah"), _("N sah"), _("Hilang"), _("% Hilang")], rows)
+        out.append(_("Kes dengan sekurang-kurangnya satu nilai hilang: {k} daripada {n} ({p}%). Kes lengkap: {c}.",
+                     k=len(bad), n=n, p=f"{100 * len(bad) / n:.1f}" if n else "0", c=n - len(bad)))
+        if bad: out.append(_("Kes terlibat: ") + "; ".join(self.case_id(k) for k in bad[:50]) + (" ..." if len(bad) > 50 else ""))
+        self.write(_("Analisis Data Hilang"), out)
+        if not bad: return
+        f = FormDialog(self, _("Tindakan Data Hilang"), [("radio", _("Tindakan:"), [_("Tiada (laporan sahaja)"), _("Buang kes yang ada nilai hilang (listwise)"),
+                                                                                   _("Ganti nilai hilang dengan min pemboleh ubah")], 0)]).result
+        if not f or f[0] == 0: return
+        if not messagebox.askyesno(_("Sahkan"), _("Tindakan ini mengubah data. Selepas ini, simpan dengan Fail > Simpan Sebagai (nama baru) supaya data asal kekal. Teruskan?")): return
+        if f[0] == 1:
+            self.rows = [row for k, row in enumerate(self.rows) if k not in set(bad)]
+            log = [_("{k} kes dibuang. N sekarang = {n}.", k=len(bad), n=len(self.rows))]
+        else:
+            log = []
+            for c, i in zip(r[0], idx):
+                v = self.values(c)
+                if not v: log.append(_("{c}: bukan nombor, tidak diganti.", c=c)); continue
+                m = st.mean(v); k = 0
+                for row in self.rows:
+                    if self.blank(row[i]): row[i] = fmtn(round(m, 4)); k += 1
+                if k: log.append(_("{c}: {k} nilai diganti dengan min {m}.", c=c, k=k, m=fmtn(round(m, 4))))
+        self.refresh(); self.write(_("Tindakan Data Hilang"), log)
+
+    def missing_codes(self):
+        f = FormDialog(self, _("Kod Data Hilang"), [("entry", _("Kod yang dianggap hilang (pisah dengan koma), cth. 99, -1:"), ", ".join(sorted(App.missing)))]).result
+        if f is None: return
+        App.missing = {c.strip() for c in f[0].split(",") if c.strip()}; self.refresh()
+        self.write(_("Kod Data Hilang"), [_("Nilai berikut dianggap hilang dalam semua analisis: {c}", c=", ".join(sorted(App.missing)) or "-"),
+                                         _("Nota: kod ini tidak disimpan dalam fail CSV; tetapkan semula selepas membuka fail.")])
+
+    def duplicates(self):
+        r = PickDialog(self, _("Cari Kes Berulang"), [(_("Pemboleh ubah ID:"), False, False)]).result
+        if not r: return
+        i = self.cols.index(r[0]); ids, same = {}, {}
+        for k, row in enumerate(self.rows):
+            if not self.blank(row[i]): ids.setdefault(row[i].strip(), []).append(k + 1)
+            same.setdefault(tuple(v.strip() for j, v in enumerate(row) if j != i), []).append(k + 1)
+        d1 = [[key, len(v), ", ".join(map(str, v))] for key, v in ids.items() if len(v) > 1]
+        d2 = [[len(v), ", ".join(map(str, v))] for v in same.values() if len(v) > 1]
+        out = [_("ID berulang:")] + (self.table([r[0], _("Bilangan"), _("Baris")], d1) if d1 else [_("Tiada.")])
+        out += ["", _("Kes yang sama sepenuhnya (selain ID):")] + (self.table([_("Bilangan"), _("Baris")], d2) if d2 else [_("Tiada.")])
+        if d1 or d2: out.append(_("Semak baris ini di Paparan Data; padam yang berulang dengan Edit > Padam Baris Dipilih."))
+        self.write(_("Cari Kes Berulang"), out)
+
+    def range_check(self):
+        r = PickDialog(self, _("Semak Julat Sah"), [(_("Pemboleh ubah:"), True, False)]).result
+        if not r: return
+        f = FormDialog(self, _("Semak Julat Sah"), [("entry", _("Nilai minimum sah:"), "1"), ("entry", _("Nilai maksimum sah:"), "5")]).result
+        if not f: return
+        lo, hi = self.num(f[0]), self.num(f[1])
+        if lo is None or hi is None or lo > hi: return messagebox.showwarning(_("Semak Julat Sah"), _("Minimum dan maksimum mesti nombor, dan minimum ≤ maksimum."))
+        rows = []
+        for k, row in enumerate(self.rows):
+            for c in r[0]:
+                v = row[self.cols.index(c)]
+                if self.blank(v): continue
+                n = self.num(v)
+                if n is None: rows.append([k + 1, row[0], c, v, _("bukan nombor")])
+                elif not lo <= n <= hi: rows.append([k + 1, row[0], c, v, _("di luar julat")])
+        out = [_("Julat sah: {lo} hingga {hi}. Nilai kosong dan kod hilang tidak disemak.", lo=fmtn(lo), hi=fmtn(hi))]
+        out += self.table([_("Baris"), self.cols[0], _("Pemboleh ubah"), _("Nilai"), _("Masalah")], rows) if rows else [_("Tiada masalah ditemui.")]
+        if rows: out.append(_("Betulkan nilai ini di Paparan Data (dwiklik sel), atau tetapkan sebagai kod hilang."))
+        self.write(_("Semak Julat Sah"), out)
+
+    # ----- analisis -----
+    def descriptives(self):
+        r = PickDialog(self, _("Statistik Deskriptif & Normaliti"), [(_("Pemboleh ubah (angka):"), True, True)]).result
+        if not r: return
+        rows, norm = [], []
+        for c in r[0]:
+            v = self.values(c); sd = st.stdev(v) if len(v) > 1 else 0
+            rows.append([c, len(v), f"{st.mean(v):.3f}", f"{st.median(v):.3f}", f"{sd:.3f}", fmtn(min(v)), fmtn(max(v))])
+            sk, sw = skew_kurt(v), shapiro(v)
+            norm.append([c] + ([f"{sk[0]:.3f}", f"{sk[1]:.3f}", f"{sk[0]/sk[1]:.2f}", f"{sk[2]:.3f}", f"{sk[3]:.3f}", f"{sk[2]/sk[3]:.2f}"] if sk else ["-"] * 6)
+                        + ([f"{sw[0]:.3f}", fp(sw[1])] if sw else ["-", "-"]))
+        out = self.table([_("Pemboleh ubah"), "N", _("Min"), _("Median"), _("SP"), _("Minimum"), _("Maksimum")], rows)
+        out += ["", _("Normaliti")] + self.table([_("Pemboleh ubah"), _("Kepencongan"), _("RP"), "z", _("Kurtosis"), _("RP"), "z", "Shapiro-Wilk W", "Sig."], norm)
+        out.append(_("Panduan: |z| > 1.96 (n < 50) atau > 3.29 (n 50–300) menunjukkan taburan tidak normal; untuk n > 300 lihat nilai kepencongan (|2|) dan kurtosis (|7|). Shapiro-Wilk Sig. < .05 = tidak normal."))
+        self.write(_("Statistik Deskriptif & Normaliti"), out)
+
+    def frequencies(self):
+        r = PickDialog(self, _("Frekuensi"), [(_("Pemboleh ubah:"), True, False)]).result
+        if not r: return
+        for c in r[0]:
+            i = self.cols.index(c); cnt = Counter(x[i].strip() for x in self.rows if not self.blank(x[i])); n = sum(cnt.values()); cum = 0; rows = []
+            for k, f in sorted(cnt.items(), key=lambda kv: sortkey(kv[0])):
+                cum += f; rows.append([k, f, f"{100*f/n:.1f}", f"{100*cum/n:.1f}"])
+            rows.append([_("Jumlah"), n, "100.0", ""])
+            out = self.table([_("Nilai"), _("Frekuensi"), _("Peratus Sah"), _("Peratus Kumulatif")], rows)
+            miss = len(self.rows) - n
+            if miss: out.append(_("Hilang: {m} kes (tidak dikira dalam peratus sah).", m=miss))
+            self.write(_("Frekuensi: {c}", c=c), out)
+
+    def correlation(self, spearman=False):
+        name = _("Korelasi Spearman") if spearman else _("Korelasi Pearson")
+        r = PickDialog(self, name, [(_("Pemboleh ubah (pilih ≥2):"), True, True)]).result
+        if not r: return
+        vs = r[0]
+        if len(vs) < 2: return messagebox.showwarning(name, _("Pilih sekurang-kurangnya 2 pemboleh ubah."))
+        rows, sent = [], []; sym = "rs" if spearman else "r"
+        for a in range(len(vs)):
+            for b in range(a + 1, len(vs)):
+                p = self.pairs(vs[a], vs[b]); n = len(p)
+                if n < 3: rows.append([vs[a], vs[b], n, "-", "-"]); continue
+                xs, ys = [x for x, _y in p], [y for _x, y in p]
+                if spearman: xs, ys = ranks(xs), ranks(ys)  # Spearman = Pearson atas pangkat
+                try: rr = st.correlation(xs, ys)
+                except st.StatisticsError: rows.append([vs[a], vs[b], n, "-", "-"]); continue
+                t = rr * math.sqrt((n - 2) / max(1e-15, 1 - rr * rr)); p = p_t(t, n - 2)
+                rows.append([vs[a], vs[b], n, f"{rr:.3f}", fp(p)])
+                sent.append(_("Terdapat korelasi {dir} {res} antara {a} dan {b}, {s}({df}) = {r}, p {p}.", dir=_("positif") if rr > 0 else _("negatif"),
+                              res=sig(p, "yang signifikan", "yang tidak signifikan"), a=vs[a], b=vs[b], s=sym, df=n - 2, r=nolead(rr), p=pp(p)))
+        out = self.table([_("Pemboleh ubah 1"), _("Pemboleh ubah 2"), "N", "rho" if spearman else "r", _("Sig. (2-hujung)")], rows)
+        self.write(name, out + (self.apa(" ".join(sent)) if sent else []))
 
     def ttest(self):
-        r = PickDialog(self, "Ujian-t Sampel Bebas", [("Pemboleh ubah ujian:", False, True), ("Pemboleh ubah kumpulan:", False, False)]).result
+        title = _("Ujian-t Sampel Bebas")
+        r = PickDialog(self, title, [(_("Pemboleh ubah ujian:"), False, True), (_("Pemboleh ubah kumpulan:"), False, False)]).result
         if not r: return
-        g = self.groups(*r)
-        if len(g) < 2: return messagebox.showwarning("Ujian-t", f"Pemboleh ubah kumpulan perlu sekurang-kurangnya 2 kumpulan (ada {len(g)}: {', '.join(g) or 'tiada'}).")
-        if len(g) > 2:
-            pick = GroupDialog(self.root, r[1], g).result
-            if not pick: return
-            g = {k: g[k] for k in pick}
+        g = self.two_groups(title, *r)
+        if not g: return
         (k1, a), (k2, b) = g.items()
-        if len(a) < 2 or len(b) < 2: return messagebox.showwarning("Ujian-t", "Setiap kumpulan perlu sekurang-kurangnya 2 nilai.")
+        if len(a) < 2 or len(b) < 2: return messagebox.showwarning(title, _("Setiap kumpulan perlu sekurang-kurangnya 2 nilai."))
         m1, m2, v1, v2, n1, n2 = st.mean(a), st.mean(b), st.variance(a), st.variance(b), len(a), len(b)
-        out = self.table(["Kumpulan", "N", "Min", "SP"], [[k1, n1, f"{m1:.3f}", f"{v1**.5:.3f}"], [k2, n2, f"{m2:.3f}", f"{v2**.5:.3f}"]])
-        sp = ((n1 - 1) * v1 + (n2 - 1) * v2) / (n1 + n2 - 2); se = math.sqrt(sp * (1 / n1 + 1 / n2))
-        se_w = math.sqrt(v1 / n1 + v2 / n2)
-        rows = []
-        if se > 0:
-            t = (m1 - m2) / se; rows.append(["Varians sama", f"{t:.3f}", n1 + n2 - 2, fp(p_t(t, n1 + n2 - 2)), f"{m1-m2:.3f}"])
-        if se_w > 0:
-            df = se_w**4 / ((v1 / n1)**2 / (n1 - 1) + (v2 / n2)**2 / (n2 - 1)); t = (m1 - m2) / se_w
-            rows.append(["Varians tak sama (Welch)", f"{t:.3f}", f"{df:.2f}", fp(p_t(t, df)), f"{m1-m2:.3f}"])
-        if not rows: return messagebox.showwarning("Ujian-t", "Varians sifar; ujian tidak boleh dikira.")
-        out += ["", "Ujian Levene Kesamaan Varians"] + self.levene_table([a, b])
-        out += ["Panduan: Sig. Levene ≥ .05 → baca baris 'Varians sama'; < .05 → baca baris 'Welch'."]
-        self.write(f"Ujian-t Sampel Bebas: {r[0]} mengikut {r[1]}", out + self.table(["", "t", "dk", "Sig. (2-hujung)", "Beza Min"], rows))
-
-    def levene_table(self, groups):
-        L = levene(groups)
-        return self.table(["F", "dk1", "dk2", "Sig."], [[f"{L[0]:.3f}", L[1], L[2], fp(p_f(*L[:3]))] if L else ["-", "-", "-", "-"]])
+        out = self.table([_("Kumpulan"), "N", _("Min"), _("SP")], [[k1, n1, f"{m1:.3f}", f"{v1**.5:.3f}"], [k2, n2, f"{m2:.3f}", f"{v2**.5:.3f}"]])
+        sp = ((n1 - 1) * v1 + (n2 - 1) * v2) / (n1 + n2 - 2); se = math.sqrt(sp * (1 / n1 + 1 / n2)); se_w = math.sqrt(v1 / n1 + v2 / n2)
+        if se == 0 or se_w == 0: return messagebox.showwarning(title, _("Varians sifar; ujian tidak boleh dikira."))
+        t1, df1 = (m1 - m2) / se, n1 + n2 - 2
+        df2 = se_w**4 / ((v1 / n1)**2 / (n1 - 1) + (v2 / n2)**2 / (n2 - 1)); t2 = (m1 - m2) / se_w
+        d = cohen_d(a, b); L = levene([a, b]); lp = p_f(*L[:3]) if L else 1.0
+        out += ["", _("Ujian Levene Kesamaan Varians")] + self.table(["F", _("dk") + "1", _("dk") + "2", "Sig."], [[f"{L[0]:.3f}", L[1], L[2], fp(lp)]] if L else [["-"] * 4])
+        out += self.table(["", "t", _("dk"), _("Sig. (2-hujung)"), _("Beza Min"), "Cohen's d"],
+                          [[_("Varians sama"), f"{t1:.3f}", df1, fp(p_t(t1, df1)), f"{m1-m2:.3f}", f"{d:.3f}"],
+                           [_("Varians tak sama (Welch)"), f"{t2:.3f}", f"{df2:.2f}", fp(p_t(t2, df2)), f"{m1-m2:.3f}", ""]])
+        out.append(_("Panduan: Sig. Levene ≥ .05 → baca baris 'Varians sama'; < .05 → baca baris 'Welch'. Cohen's d: 0.2 kecil, 0.5 sederhana, 0.8 besar."))
+        t, df = (t1, str(df1)) if lp >= .05 else (t2, f"{df2:.2f}"); p = p_t(t, float(df))
+        out += self.apa(_("Ujian-t sampel bebas menunjukkan {res} dalam {dv} antara {g1} (M = {m1}, SP = {s1}) dan {g2} (M = {m2}, SP = {s2}), t({df}) = {t}, p {p}, d = {d}.",
+                          res=sig(p, "perbezaan yang signifikan", "perbezaan yang tidak signifikan"), dv=r[0], g1=k1, m1=f2(m1), s1=f2(v1**.5),
+                          g2=k2, m2=f2(m2), s2=f2(v2**.5), df=df, t=f2(t), p=pp(p), d=f2(abs(d))))
+        self.write(_("{t}: {a} mengikut {b}", t=title, a=r[0], b=r[1]), out)
 
     def paired(self):
-        r = PickDialog(self, "Ujian-t Berpasangan", [("Pemboleh ubah 1:", False, True), ("Pemboleh ubah 2:", False, True)]).result
+        title = _("Ujian-t Berpasangan")
+        r = PickDialog(self, title, [(_("Pemboleh ubah 1:"), False, True), (_("Pemboleh ubah 2:"), False, True)]).result
         if not r: return
-        d = [x - y for x, y in self.pairs(*r)]; n = len(d)
-        if n < 2 or st.stdev(d) == 0: return messagebox.showwarning("Ujian-t", "Data tidak mencukupi atau perbezaan sentiasa sama.")
-        t = st.mean(d) / (st.stdev(d) / math.sqrt(n))
-        self.write(f"Ujian-t Berpasangan: {r[0]} - {r[1]}", self.table(["N", "Beza Min", "SP Beza", "t", "dk", "Sig. (2-hujung)"],
-                   [[n, f"{st.mean(d):.3f}", f"{st.stdev(d):.3f}", f"{t:.3f}", n - 1, fp(p_t(t, n - 1))]]))
+        pr = self.pairs(*r); d = [x - y for x, y in pr]; n = len(d)
+        if n < 2 or st.stdev(d) == 0: return messagebox.showwarning(title, _("Data tidak mencukupi atau perbezaan sentiasa sama."))
+        x, y = [p[0] for p in pr], [p[1] for p in pr]
+        t = st.mean(d) / (st.stdev(d) / math.sqrt(n)); p = p_t(t, n - 1); dz = st.mean(d) / st.stdev(d)
+        out = self.table([_("Pemboleh ubah"), "N", _("Min"), _("SP")], [[r[0], n, f"{st.mean(x):.3f}", f"{st.stdev(x):.3f}"], [r[1], n, f"{st.mean(y):.3f}", f"{st.stdev(y):.3f}"]])
+        out += self.table(["N", _("Beza Min"), _("SP Beza"), "t", _("dk"), _("Sig. (2-hujung)"), "Cohen's dz"],
+                          [[n, f"{st.mean(d):.3f}", f"{st.stdev(d):.3f}", f"{t:.3f}", n - 1, fp(p), f"{dz:.3f}"]])
+        out += self.apa(_("Ujian-t sampel berpasangan menunjukkan {res} antara {v1} (M = {m1}, SP = {s1}) dan {v2} (M = {m2}, SP = {s2}), t({df}) = {t}, p {p}, d = {d}.",
+                          res=sig(p, "perbezaan yang signifikan", "perbezaan yang tidak signifikan"), v1=r[0], m1=f2(st.mean(x)), s1=f2(st.stdev(x)),
+                          v2=r[1], m2=f2(st.mean(y)), s2=f2(st.stdev(y)), df=n - 1, t=f2(t), p=pp(p), d=f2(abs(dz))))
+        self.write(_("{t}: {a} - {b}", t=title, a=r[0], b=r[1]), out)
 
     def anova(self):
-        r = PickDialog(self, "ANOVA Sehala", [("Pemboleh ubah bersandar:", False, True), ("Faktor (kumpulan):", False, False)]).result
+        title = _("ANOVA Sehala")
+        r = PickDialog(self, title, [(_("Pemboleh ubah bersandar:"), False, True), (_("Faktor (kumpulan):"), False, False)]).result
         if not r: return
-        g = dict(sorted(self.groups(*r).items(), key=lambda kv: sortkey(kv[0]))); keys, gl = list(g), list(g.values())
+        g = self.groups(*r); keys, gl = list(g), list(g.values())
         res = anova1(gl)
-        if res is None: return messagebox.showwarning("ANOVA", "Perlu ≥2 kumpulan, data mencukupi, dan varians dalam kumpulan bukan sifar.")
-        f, d1, d2, ssb, ssw = res
-        out = self.table(["Kumpulan", "N", "Min", "SP"], [[kk, len(x), f"{st.mean(x):.3f}", f"{st.stdev(x):.3f}" if len(x) > 1 else "-"] for kk, x in g.items()])
-        out += ["", "Ujian Levene Kesamaan Varians"] + self.levene_table(gl)
-        out += self.table(["Sumber", "JK", "dk", "MK", "F", "Sig."],
-                   [["Antara kumpulan", f"{ssb:.3f}", d1, f"{ssb/d1:.3f}", f"{f:.3f}", fp(p_f(f, d1, d2))],
-                    ["Dalam kumpulan", f"{ssw:.3f}", d2, f"{ssw/d2:.3f}", "", ""], ["Jumlah", f"{ssb+ssw:.3f}", d1 + d2, "", "", ""]])
+        if res is None: return messagebox.showwarning(title, _("Perlu ≥2 kumpulan, data mencukupi, dan varians dalam kumpulan bukan sifar."))
+        f, d1, d2, ssb, ssw = res; p = p_f(f, d1, d2); eta = ssb / (ssb + ssw)
+        out = self.table([_("Kumpulan"), "N", _("Min"), _("SP")], [[kk, len(x), f"{st.mean(x):.3f}", f"{st.stdev(x):.3f}" if len(x) > 1 else "-"] for kk, x in g.items()])
+        L = levene(gl)
+        out += ["", _("Ujian Levene Kesamaan Varians")] + self.table(["F", _("dk") + "1", _("dk") + "2", "Sig."], [[f"{L[0]:.3f}", L[1], L[2], fp(p_f(*L[:3]))]] if L else [["-"] * 4])
+        out += self.table([_("Sumber"), _("JK"), _("dk"), _("MK"), "F", "Sig.", "η²"],
+                   [[_("Antara kumpulan"), f"{ssb:.3f}", d1, f"{ssb/d1:.3f}", f"{f:.3f}", fp(p), f"{eta:.3f}"],
+                    [_("Dalam kumpulan"), f"{ssw:.3f}", d2, f"{ssw/d2:.3f}", "", "", ""], [_("Jumlah"), f"{ssb+ssw:.3f}", d1 + d2, "", "", "", ""]])
+        out.append(_("Panduan η²: .01 kecil, .06 sederhana, .14 besar."))
         if len(g) >= 3:
-            out += ["", "Ujian Post-hoc Tukey HSD"] + self.table(["(I)", "(J)", "Beza Min (I-J)", "Ralat Piawai", "Sig.", "SK 95% Bawah", "SK 95% Atas"],
-                   [[keys[i], keys[j], f"{d:.3f}" + ("*" if p < .05 else ""), f"{se:.3f}", fp(p), f"{lo:.3f}", f"{hi:.3f}"]
-                    for i, j, d, se, p, lo, hi in tukey(gl)])
-            out += ["* Beza min signifikan pada aras .05."]
-        self.write(f"ANOVA Sehala: {r[0]} mengikut {r[1]}", out)
+            out += ["", _("Ujian Post-hoc Tukey HSD")] + self.table(["(I)", "(J)", _("Beza Min (I-J)"), _("Ralat Piawai"), "Sig.", _("SK 95% Bawah"), _("SK 95% Atas")],
+                   [[keys[i], keys[j], f"{dd:.3f}" + ("*" if pv < .05 else ""), f"{se:.3f}", fp(pv), f"{lo:.3f}", f"{hi:.3f}"]
+                    for i, j, dd, se, pv, lo, hi in tukey(gl)])
+            out.append(_("* Beza min signifikan pada aras .05."))
+        out += self.apa(_("ANOVA sehala menunjukkan kesan {iv} {res} terhadap {dv}, F({d1}, {d2}) = {f}, p {p}, η² = {e}.",
+                          iv=r[1], res=sig(p, "yang signifikan", "yang tidak signifikan"), dv=r[0], d1=d1, d2=d2, f=f2(f), p=pp(p), e=nolead(eta)))
+        self.write(_("{t}: {a} mengikut {b}", t=title, a=r[0], b=r[1]), out)
 
     def anova2(self):
-        r = PickDialog(self, "ANOVA Dua Hala", [("Pemboleh ubah bersandar:", False, True), ("Faktor A:", False, False), ("Faktor B:", False, False)]).result
+        title = _("ANOVA Dua Hala")
+        r = PickDialog(self, title, [(_("Pemboleh ubah bersandar:"), False, True), (_("Faktor A:"), False, False), (_("Faktor B:"), False, False)]).result
         if not r: return
         dep, fa, fb = r
-        if fa == fb: return messagebox.showwarning("ANOVA Dua Hala", "Faktor A dan B mesti berbeza.")
+        if fa == fb: return messagebox.showwarning(title, _("Faktor A dan B mesti berbeza."))
         i, ja, jb = (self.cols.index(c) for c in r); data = []
         for row in self.rows:
             v = self.num(row[i])
-            if v is not None and row[ja] != "" and row[jb] != "": data.append((v, row[ja], row[jb]))
+            if v is not None and not self.blank(row[ja]) and not self.blank(row[jb]): data.append((v, row[ja].strip(), row[jb].strip()))
         m = anova2(*zip(*data)) if data else None
-        if m is None: return messagebox.showwarning("ANOVA Dua Hala", "Tidak boleh dikira: setiap faktor perlu ≥2 aras, setiap gabungan A×B perlu ada data, dan data mesti mencukupi.")
+        if m is None: return messagebox.showwarning(title, _("Tidak boleh dikira: setiap faktor perlu ≥2 aras, setiap gabungan A×B perlu ada data, dan data mesti mencukupi."))
         cells = {}
         for v, a, b in data: cells.setdefault((a, b), []).append(v)
-        out = ["Min (N) setiap sel"] + self.table([f"{fa} \\ {fb}"] + m["lb"],
+        out = [_("Min (N) setiap sel")] + self.table([f"{fa} \\ {fb}"] + m["lb"],
               [[a] + [f"{st.mean(cells[a, b]):.3f} ({len(cells[a, b])})" for b in m["lb"]] for a in m["la"]])
-        out += ["", "Ujian Levene Kesamaan Varians (semua sel)"] + self.levene_table(list(cells.values()))
-        mse = m["sse"] / m["dfe"]; rows = []
+        L = levene(list(cells.values()))
+        out += ["", _("Ujian Levene Kesamaan Varians (semua sel)")] + self.table(["F", _("dk") + "1", _("dk") + "2", "Sig."], [[f"{L[0]:.3f}", L[1], L[2], fp(p_f(*L[:3]))]] if L else [["-"] * 4])
+        mse = m["sse"] / m["dfe"]; rows, sent = [], []
         for key, label in (("A", fa), ("B", fb), ("AB", f"{fa} × {fb}")):
-            ss, df = m["terms"][key]; f = (ss / df) / mse if mse else math.inf
-            rows.append([label, f"{ss:.3f}", df, f"{ss/df:.3f}", f"{f:.3f}", fp(p_f(f, df, m["dfe"])) if math.isfinite(f) else "< .001"])
-        rows += [["Ralat", f"{m['sse']:.3f}", m["dfe"], f"{mse:.3f}", "", ""], ["Jumlah terbetul", f"{m['sst']:.3f}", m["n"] - 1, "", "", ""]]
-        out += self.table(["Sumber", "JK Jenis III", "dk", "MK", "F", "Sig."], rows)
-        out += ["Panduan: Jika interaksi (A × B) signifikan, kesan A bergantung pada aras B — tafsir min sel, bukan kesan utama sahaja."]
-        self.write(f"ANOVA Dua Hala: {dep} mengikut {fa} dan {fb}", out)
+            ss, df = m["terms"][key]; f = (ss / df) / mse if mse else math.inf; p = p_f(f, df, m["dfe"]) if math.isfinite(f) else 0.0
+            pe = ss / (ss + m["sse"])
+            rows.append([label, f"{ss:.3f}", df, f"{ss/df:.3f}", f"{f:.3f}", fp(p), f"{pe:.3f}"])
+            sent.append(_("Kesan {e} adalah {res}, F({d1}, {d2}) = {f}, p {p}, η²p = {pe}.", e=label, res=sig(p, "signifikan", "tidak signifikan"),
+                          d1=df, d2=m["dfe"], f=f2(f), p=pp(p), pe=nolead(pe)))
+        rows += [[_("Ralat"), f"{m['sse']:.3f}", m["dfe"], f"{mse:.3f}", "", "", ""], [_("Jumlah terbetul"), f"{m['sst']:.3f}", m["n"] - 1, "", "", "", ""]]
+        out += self.table([_("Sumber"), _("JK Jenis III"), _("dk"), _("MK"), "F", "Sig.", "η²p"], rows)
+        out.append(_("Panduan: Jika interaksi (A × B) signifikan, kesan A bergantung pada aras B — tafsir min sel, bukan kesan utama sahaja."))
+        self.write(_("{t}: {a} mengikut {b} dan {c}", t=title, a=dep, b=fa, c=fb), out + self.apa(" ".join(sent)))
 
     def chisq(self):
-        r = PickDialog(self, "Khi Kuasa Dua", [("Baris:", False, False), ("Lajur:", False, False)]).result
+        title = _("Khi Kuasa Dua")
+        r = PickDialog(self, title, [(_("Baris:"), False, False), (_("Lajur:"), False, False)]).result
         if not r: return
         i, j = self.cols.index(r[0]), self.cols.index(r[1])
-        obs = Counter((x[i], x[j]) for x in self.rows if x[i] != "" and x[j] != "")
-        R, C = sorted({a for a, _ in obs}), sorted({b for _, b in obs}); n = sum(obs.values())
-        if len(R) < 2 or len(C) < 2: return messagebox.showwarning("Khi Kuasa Dua", "Setiap pemboleh ubah perlu ≥2 kategori.")
+        obs = Counter((x[i].strip(), x[j].strip()) for x in self.rows if not self.blank(x[i]) and not self.blank(x[j]))
+        R, C = sorted({a for a, _b in obs}, key=sortkey), sorted({b for _a, b in obs}, key=sortkey); n = sum(obs.values())
+        if len(R) < 2 or len(C) < 2: return messagebox.showwarning(title, _("Setiap pemboleh ubah perlu ≥2 kategori."))
         rt = {a: sum(obs[a, b] for b in C) for a in R}; ct = {b: sum(obs[a, b] for a in R) for b in C}
-        x2 = sum((obs[a, b] - rt[a] * ct[b] / n)**2 / (rt[a] * ct[b] / n) for a in R for b in C); df = (len(R) - 1) * (len(C) - 1)
-        tab = self.table([f"{r[0]} \\ {r[1]}"] + C + ["Jumlah"], [[a] + [obs[a, b] for b in C] + [rt[a]] for a in R] + [["Jumlah"] + [ct[b] for b in C] + [n]])
-        self.write(f"Khi Kuasa Dua: {r[0]} x {r[1]}", tab + self.table(["Khi kuasa dua", "dk", "Sig."], [[f"{x2:.3f}", df, fp(p_chi2(x2, df))]]))
+        exp = {(a, b): rt[a] * ct[b] / n for a in R for b in C}
+        x2 = sum((obs[k] - e) ** 2 / e for k, e in exp.items()); df = (len(R) - 1) * (len(C) - 1); p = p_chi2(x2, df)
+        v = math.sqrt(x2 / (n * (min(len(R), len(C)) - 1))); low = sum(e < 5 for e in exp.values())
+        out = self.table([f"{r[0]} \\ {r[1]}"] + C + [_("Jumlah")], [[a] + [obs[a, b] for b in C] + [rt[a]] for a in R] + [[_("Jumlah")] + [ct[b] for b in C] + [n]])
+        out += self.table([_("Khi kuasa dua"), _("dk"), "Sig.", "Cramér's V"], [[f"{x2:.3f}", df, fp(p), f"{v:.3f}"]])
+        out.append(_("{k} daripada {t} sel ({pc}%) mempunyai kekerapan jangkaan < 5{w}", k=low, t=len(exp), pc=f"{100 * low / len(exp):.1f}",
+                     w=_(" — melebihi 20%, keputusan khi kuasa dua kurang dipercayai.") if low / len(exp) > .2 else "."))
+        out += self.apa(_("Ujian khi kuasa dua kebebasan menunjukkan hubungan {res} antara {a} dan {b}, χ²({df}, N = {n}) = {x}, p {p}, V Cramér = {v}.",
+                          res=sig(p, "yang signifikan", "yang tidak signifikan"), a=r[0], b=r[1], df=df, n=n, x=f2(x2), p=pp(p), v=nolead(v)))
+        self.write(_("{t}: {a} x {b}", t=title, a=r[0], b=r[1]), out)
 
+    # ----- bukan parametrik -----
+    def mannwhitney(self):
+        title = "Mann-Whitney U"
+        r = PickDialog(self, title, [(_("Pemboleh ubah ujian:"), False, True), (_("Pemboleh ubah kumpulan:"), False, False)]).result
+        if not r: return
+        g = self.two_groups(title, *r)
+        if not g: return
+        (k1, a), (k2, b) = g.items(); res = mann_whitney(a, b)
+        if res is None: return messagebox.showwarning(title, _("Data tidak mencukupi atau semua nilai sama."))
+        u, z, p, eff, mr1, mr2 = res
+        out = self.table([_("Kumpulan"), "N", _("Median"), _("Min Pangkat")], [[k1, len(a), fmtn(st.median(a)), f"{mr1:.2f}"], [k2, len(b), fmtn(st.median(b)), f"{mr2:.2f}"]])
+        out += self.table(["U", "Z", _("Sig. (2-hujung)"), "r = |Z|/√N"], [[f"{u:.1f}", f"{z:.3f}", fp(p), f"{eff:.3f}"]])
+        out.append(_("Panduan r: .1 kecil, .3 sederhana, .5 besar. Sig. asimptotik dengan pembetulan seri."))
+        out += self.apa(_("Ujian Mann-Whitney U menunjukkan {res} dalam {dv} antara {g1} (Mdn = {md1}) dan {g2} (Mdn = {md2}), U = {u}, z = {z}, p {p}, r = {r}.",
+                          res=sig(p, "perbezaan yang signifikan", "perbezaan yang tidak signifikan"), dv=r[0], g1=k1, md1=fmtn(st.median(a)),
+                          g2=k2, md2=fmtn(st.median(b)), u=f"{u:.1f}", z=f2(z), p=pp(p), r=nolead(eff)))
+        self.write(_("{t}: {a} mengikut {b}", t=title, a=r[0], b=r[1]), out)
+
+    def wilcoxon(self):
+        title = _("Ujian Pangkat Bertanda Wilcoxon")
+        r = PickDialog(self, title, [(_("Pemboleh ubah 1:"), False, True), (_("Pemboleh ubah 2:"), False, True)]).result
+        if not r: return
+        pr = self.pairs(*r); x, y = [p[0] for p in pr], [p[1] for p in pr]; res = wilcoxon(x, y)
+        if res is None: return messagebox.showwarning(title, _("Data tidak mencukupi atau tiada perbezaan langsung."))
+        wp, wm, z, p, eff, nz = res
+        out = self.table([_("Pemboleh ubah"), "N", _("Median")], [[r[0], len(x), fmtn(st.median(x))], [r[1], len(y), fmtn(st.median(y))]])
+        out += self.table([_("Pangkat +"), _("Pangkat −"), _("Seri (dibuang)"), "Z", _("Sig. (2-hujung)"), "r = |Z|/√n"],
+                          [[f"{wp:.1f}", f"{wm:.1f}", len(x) - nz, f"{z:.3f}", fp(p), f"{eff:.3f}"]])
+        out.append(_("Pangkat + bermaksud {a} > {b}. n = bilangan pasangan yang berbeza.", a=r[0], b=r[1]))
+        out += self.apa(_("Ujian pangkat bertanda Wilcoxon menunjukkan {res} antara {v1} (Mdn = {m1}) dan {v2} (Mdn = {m2}), z = {z}, p {p}, r = {r}.",
+                          res=sig(p, "perbezaan yang signifikan", "perbezaan yang tidak signifikan"), v1=r[0], m1=fmtn(st.median(x)),
+                          v2=r[1], m2=fmtn(st.median(y)), z=f2(z), p=pp(p), r=nolead(eff)))
+        self.write(_("{t}: {a} - {b}", t=title, a=r[0], b=r[1]), out)
+
+    def kruskal(self):
+        title = "Kruskal-Wallis"
+        r = PickDialog(self, title, [(_("Pemboleh ubah bersandar:"), False, True), (_("Faktor (kumpulan):"), False, False)]).result
+        if not r: return
+        g = self.groups(*r); res = kruskal(list(g.values()))
+        if res is None: return messagebox.showwarning(title, _("Perlu ≥2 kumpulan dan data mencukupi (dan tidak semua nilai sama)."))
+        h, df, p, eps, mr = res
+        out = self.table([_("Kumpulan"), "N", _("Median"), _("Min Pangkat")], [[k, len(v), fmtn(st.median(v)), f"{m:.2f}"] for (k, v), m in zip(g.items(), mr)])
+        out += self.table(["H", _("dk"), "Sig.", "ε²"], [[f"{h:.3f}", df, fp(p), f"{eps:.3f}"]])
+        out.append(_("Jika signifikan, bandingkan pasangan kumpulan dengan Mann-Whitney U dan pembetulan Bonferroni (α / bilangan perbandingan)."))
+        out += self.apa(_("Ujian Kruskal-Wallis menunjukkan {res} dalam {dv} merentas kumpulan {iv}, H({df}) = {h}, p {p}, ε² = {e}.",
+                          res=sig(p, "perbezaan yang signifikan", "perbezaan yang tidak signifikan"), dv=r[0], iv=r[1], df=df, h=f2(h), p=pp(p), e=nolead(eps)))
+        self.write(_("{t}: {a} mengikut {b}", t=title, a=r[0], b=r[1]), out)
+
+    # ----- regresi -----
     def regression(self):
-        r = PickDialog(self, "Regresi Linear", [("Pemboleh ubah bersandar (Y):", False, True), ("Peramal (X, boleh >1):", True, True)]).result
+        title = _("Regresi Linear")
+        r = PickDialog(self, title, [(_("Pemboleh ubah bersandar (Y):"), False, True), (_("Peramal (X, boleh >1):"), True, True)]).result
         if not r: return
         dep, ind = r
-        if dep in ind: return messagebox.showwarning("Regresi", "Y tidak boleh juga menjadi peramal.")
+        if dep in ind: return messagebox.showwarning(title, _("Y tidak boleh juga menjadi peramal."))
         idx = [self.cols.index(c) for c in [dep] + ind]; data = []
         for row in self.rows:  # buang kes yang ada nilai kosong (listwise)
             v = [self.num(row[i]) for i in idx]
             if None not in v: data.append(v)
         m = ols([d[0] for d in data], [d[1:] for d in data]) if data else None
-        if m is None: return messagebox.showwarning("Regresi", "Tidak boleh dikira: data tidak mencukupi, Y malar, atau peramal berkolinear.")
-        pf = lambda x, df: fp(p_t(x, df)) if math.isfinite(x) else "< .001"
-        out = self.table(["N", "R", "R²", "R² Terlaras", "Ralat Piawai Anggaran"],
+        if m is None: return messagebox.showwarning(title, _("Tidak boleh dikira: data tidak mencukupi, Y malar, atau peramal berkolinear."))
+        pf = lambda x, df: p_t(x, df) if math.isfinite(x) else 0.0
+        pmod = p_f(m["f"], m["k"], m["dfe"]) if math.isfinite(m["f"]) else 0.0
+        out = self.table(["N", "R", "R²", _("R² Terlaras"), _("Ralat Piawai Anggaran")],
                          [[m["n"], f"{math.sqrt(max(0, m['r2'])):.3f}", f"{m['r2']:.3f}", f"{m['adj']:.3f}", f"{m['see']:.3f}"]])
-        out += self.table(["Sumber", "JK", "dk", "MK", "F", "Sig."],
-                          [["Regresi", f"{m['ssr']:.3f}", m["k"], f"{m['ssr']/m['k']:.3f}", f"{m['f']:.3f}",
-                            fp(p_f(m["f"], m["k"], m["dfe"])) if math.isfinite(m["f"]) else "< .001"],
-                           ["Reja", f"{m['sse']:.3f}", m["dfe"], f"{m['sse']/m['dfe']:.3f}", "", ""],
-                           ["Jumlah", f"{m['sst']:.3f}", m["n"] - 1, "", "", ""]])
+        out += self.table([_("Sumber"), _("JK"), _("dk"), _("MK"), "F", "Sig."],
+                          [[_("Regresi"), f"{m['ssr']:.3f}", m["k"], f"{m['ssr']/m['k']:.3f}", f"{m['f']:.3f}", fp(pmod)],
+                           [_("Reja"), f"{m['sse']:.3f}", m["dfe"], f"{m['sse']/m['dfe']:.3f}", "", ""],
+                           [_("Jumlah"), f"{m['sst']:.3f}", m["n"] - 1, "", "", ""]])
         xs = [d[1:] for d in data]; vf = [None] + vif(xs)
         fv = lambda v: "-" if v is None else ("∞" if math.isinf(v) else f"{v:.3f}")
-        out += self.table(["", "B", "Ralat Piawai", "Beta", "t", "Sig.", "Toleransi", "VIF"],
+        out += self.table(["", "B", _("Ralat Piawai"), "Beta", "t", "Sig.", _("Toleransi"), "VIF"],
                           [[name, f"{m['b'][a]:.3f}", f"{m['se'][a]:.3f}", "" if a == 0 else f"{m['beta'][a]:.3f}",
-                            f"{m['t'][a]:.3f}", pf(m["t"][a], m["dfe"]),
+                            f"{m['t'][a]:.3f}", fp(pf(m["t"][a], m["dfe"])),
                             "" if a == 0 else fv(None if vf[a] is None else 1 / vf[a]), "" if a == 0 else fv(vf[a])]
-                           for a, name in enumerate(["(Pemalar)"] + ind)])
-        # ujian andaian: Sig. >= .05 bermaksud andaian tidak ditolak
-        ok = lambda p: "Dipenuhi" if p >= .05 else "Dilanggar"
+                           for a, name in enumerate([_("(Pemalar)")] + ind)])
+        ok = lambda p: _("Dipenuhi") if p >= .05 else _("Dilanggar")   # Sig. >= .05: andaian tidak ditolak
         sw, bp, dw = shapiro(m["e"]), breusch_pagan(m["e"], xs), durbin_watson(m["e"]) if m["sse"] > 0 else None
-        rows = [["Normaliti reja (Shapiro-Wilk)", "W = " + f"{sw[0]:.3f}", fp(sw[1]), ok(sw[1])] if sw else ["Normaliti reja (Shapiro-Wilk)", "-", "-", "Tak boleh dikira"],
-                [f"Homoskedastisiti (Breusch-Pagan, dk={bp[1]})", "χ² = " + f"{bp[0]:.3f}", fp(p_chi2(*bp)), ok(p_chi2(*bp))] if bp else ["Homoskedastisiti (Breusch-Pagan)", "-", "-", "Tak boleh dikira"],
-                ["Kebebasan reja (Durbin-Watson)", "d = " + f"{dw:.3f}" if dw is not None else "-", "",
-                 "-" if dw is None else ("Dipenuhi" if 1.5 <= dw <= 2.5 else "Semak")],
-                ["Multikolinearan (VIF maks)", fv(max((v for v in vf[1:] if v is not None), default=None)), "",
-                 "Dipenuhi" if all(v is not None and v < 10 for v in vf[1:]) else "Semak"]]
-        out += ["", "Ujian Andaian Regresi"] + self.table(["Andaian", "Statistik", "Sig.", "Keputusan"], rows)
-        out += ["Panduan: Sig. ≥ .05 = andaian dipenuhi; Durbin-Watson 1.5–2.5 = OK; VIF < 10 = OK."]
-        self.write(f"Regresi Linear: {dep} ~ {' + '.join(ind)}", out)
+        na = _("Tak boleh dikira")
+        rows = [[_("Normaliti reja (Shapiro-Wilk)"), f"W = {sw[0]:.3f}", fp(sw[1]), ok(sw[1])] if sw else [_("Normaliti reja (Shapiro-Wilk)"), "-", "-", na],
+                [_("Homoskedastisiti (Breusch-Pagan, dk={d})", d=bp[1]), f"χ² = {bp[0]:.3f}", fp(p_chi2(*bp)), ok(p_chi2(*bp))] if bp else [_("Homoskedastisiti (Breusch-Pagan)"), "-", "-", na],
+                [_("Kebebasan reja (Durbin-Watson)"), f"d = {dw:.3f}" if dw is not None else "-", "", "-" if dw is None else (_("Dipenuhi") if 1.5 <= dw <= 2.5 else _("Semak"))],
+                [_("Multikolinearan (VIF maks)"), fv(max((v for v in vf[1:] if v is not None), default=None)), "",
+                 _("Dipenuhi") if all(v is not None and v < 10 for v in vf[1:]) else _("Semak")]]
+        out += ["", _("Ujian Andaian Regresi")] + self.table([_("Andaian"), _("Statistik"), "Sig.", _("Keputusan")], rows)
+        out.append(_("Panduan: Sig. ≥ .05 = andaian dipenuhi; Durbin-Watson 1.5–2.5 = OK; VIF < 10 = OK."))
+        sent = [_("Model regresi adalah {res}, F({k}, {df}) = {f}, p {p}, dan menerangkan {pc}% varians dalam {dv} (R² = {r2}).",
+                  res=sig(pmod, "signifikan", "tidak signifikan"), k=m["k"], df=m["dfe"], f=f2(m["f"]), p=pp(pmod), pc=f"{100 * m['r2']:.1f}", dv=dep, r2=nolead(m["r2"]))]
+        for a, name in enumerate(ind, 1):
+            p = pf(m["t"][a], m["dfe"])
+            sent.append(_("{x} ialah peramal {res} bagi {dv} (B = {b}, β = {beta}, t({df}) = {t}, p {p}).", x=name, res=sig(p, "yang signifikan", "yang tidak signifikan"),
+                          dv=dep, b=f2(m["b"][a]), beta=nolead(m["beta"][a]) if abs(m["beta"][a]) < 1 else f2(m["beta"][a]), df=m["dfe"], t=f2(m["t"][a]), p=pp(p)))
+        out += self.apa(" ".join(sent))
         sd = m["see"] or 1; z = sorted(v / sd for v in m["e"]); n = len(z); N = st.NormalDist()
-        self.plots([("Reja lwn Nilai Ramalan", m["yhat"], m["e"], "Nilai ramalan", "Reja", "zero"),
-                    ("Plot Q-Q Normal Reja", [N.inv_cdf((i - .375) / (n + .25)) for i in range(1, n + 1)], z,
-                     "Kuantil teori", "Reja piawai", "diag")])
-
-    def plots(self, specs):
-        """Lukis plot serakan dalam Paparan Output. spec: (tajuk, x, y, label x, label y, 'zero'|'diag')."""
-        W, H, L, B = 380, 280, 50, 40
-        for title, xs, ys, xl, yl, ref in specs:
-            c = tk.Canvas(self.out, width=W, height=H, bg="white", highlightthickness=1, highlightbackground=BORDER)
-            x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
-            if ref == "diag": x0 = y0 = min(x0, y0); x1 = y1 = max(x1, y1)
-            if ref == "zero": y0, y1 = min(y0, 0), max(y1, 0)
-            x1, y1 = (x1 if x1 > x0 else x0 + 1), (y1 if y1 > y0 else y0 + 1)
-            px = lambda v: L + (v - x0) / (x1 - x0) * (W - L - 15); py = lambda v: H - B - (v - y0) / (y1 - y0) * (H - B - 30)
-            c.create_text(W / 2, 12, text=title, font=("DejaVu Sans", 9, "bold"), fill="#1E3A8A")
-            c.create_rectangle(L, 30, W - 15, H - B, outline="#888")
-            for v in (x0, x1): c.create_text(px(v), H - B + 10, text=f"{v:.3g}", font=FONT)
-            for v in (y0, y1): c.create_text(L - 4, py(v), text=f"{v:.3g}", anchor="e", font=FONT)
-            c.create_text(W / 2, H - 10, text=xl, font=FONT); c.create_text(12, H / 2 - B / 2, text=yl, angle=90, font=FONT)
-            if ref == "zero": c.create_line(L, py(0), W - 15, py(0), fill="#C0392B", dash=(4, 2))
-            else: c.create_line(px(x0), py(x0), px(x1), py(x1), fill="#C0392B", dash=(4, 2))
-            for x, y in zip(xs, ys): c.create_oval(px(x) - 3, py(y) - 3, px(x) + 3, py(y) + 3, fill="#3C7FB1", outline="#1E3A8A")
-            self.out.window_create("end", window=c, padx=4, pady=4)
-        self.out.insert("end", "\n\n"); self.out.see("end")
+        out += [plot_ops(_("Reja lwn Nilai Ramalan"), m["yhat"], m["e"], _("Nilai ramalan"), _("Reja"), "zero"),
+                plot_ops(_("Plot Q-Q Normal Reja"), [N.inv_cdf((i - .375) / (n + .25)) for i in range(1, n + 1)], z, _("Kuantil teori"), _("Reja piawai"), "diag")]
+        self.write(_("{t}: {a} ~ {b}", t=title, a=dep, b=" + ".join(ind)), out)
 
     def logistic(self):
-        r = PickDialog(self, "Regresi Logistik (Binari)", [("Pemboleh ubah bersandar (2 kategori):", False, False), ("Peramal (X, angka):", True, True)]).result
+        title = _("Regresi Logistik (Binari)")
+        r = PickDialog(self, title, [(_("Pemboleh ubah bersandar (2 kategori):"), False, False), (_("Peramal (X, angka):"), True, True)]).result
         if not r: return
         dep, ind = r
-        if dep in ind: return messagebox.showwarning("Regresi Logistik", "Y tidak boleh juga menjadi peramal.")
+        if dep in ind: return messagebox.showwarning(title, _("Y tidak boleh juga menjadi peramal."))
         di, idx = self.cols.index(dep), [self.cols.index(c) for c in ind]; data = []
         for row in self.rows:  # listwise
             v = [self.num(row[i]) for i in idx]
-            if row[di] != "" and None not in v: data.append((row[di], v))
-        cats = sorted({d[0] for d in data}, key=lambda k: (self.num(k) is None, self.num(k) or 0, k))
-        if len(cats) != 2: return messagebox.showwarning("Regresi Logistik", f"Pemboleh ubah bersandar mesti ada tepat 2 kategori (ada {len(cats)}).")
+            if not self.blank(row[di]) and None not in v: data.append((row[di].strip(), v))
+        cats = sorted({d[0] for d in data}, key=sortkey)
+        if len(cats) != 2: return messagebox.showwarning(title, _("Pemboleh ubah bersandar mesti ada tepat 2 kategori (ada {n}).", n=len(cats)))
         y = [int(d[0] == cats[1]) for d in data]; xs = [d[1] for d in data]
         m = logit(y, xs) if len(data) > len(ind) + 1 else None
-        if m is None: return messagebox.showwarning("Regresi Logistik", "Model tidak menumpu: data tidak mencukupi, peramal berkolinear, atau pemisahan sempurna (satu peramal meramal Y dengan tepat).")
-        out = [f"Pengekodan: {cats[0]} = 0, {cats[1]} = 1   (kebarangkalian yang dimodelkan: {dep} = {cats[1]})"]
-        out += self.table(["N", "-2 Log Kebolehjadian", "R² Cox & Snell", "R² Nagelkerke"],
-                          [[m["n"], f"{-2*m['ll']:.3f}", f"{m['cs']:.3f}", f"{m['nk']:.3f}"]])
-        out += ["", "Ujian Omnibus Model"] + self.table(["χ²", "dk", "Sig."], [[f"{m['chi2']:.3f}", m["k"], fp(p_chi2(m["chi2"], m["k"]))]])
+        if m is None: return messagebox.showwarning(title, _("Model tidak menumpu: data tidak mencukupi, peramal berkolinear, atau pemisahan sempurna (satu peramal meramal Y dengan tepat)."))
+        pmod = p_chi2(m["chi2"], m["k"])
+        out = [_("Pengekodan: {a} = 0, {b} = 1   (kebarangkalian yang dimodelkan: {d} = {b})", a=cats[0], b=cats[1], d=dep)]
+        out += self.table(["N", _("-2 Log Kebolehjadian"), _("R² Cox & Snell"), _("R² Nagelkerke")], [[m["n"], f"{-2*m['ll']:.3f}", f"{m['cs']:.3f}", f"{m['nk']:.3f}"]])
+        out += ["", _("Ujian Omnibus Model")] + self.table(["χ²", _("dk"), "Sig."], [[f"{m['chi2']:.3f}", m["k"], fp(pmod)]])
         ex = lambda b: f"{math.exp(b):.3f}" if b < 700 else "∞"
-        out += self.table(["", "B", "Ralat Piawai", "Wald", "dk", "Sig.", "Exp(B)"],
+        out += self.table(["", "B", _("Ralat Piawai"), "Wald", _("dk"), "Sig.", "Exp(B)"],
                           [[name, f"{m['b'][a]:.3f}", f"{m['se'][a]:.3f}", f"{m['wald'][a]:.3f}", 1,
                             fp(p_chi2(m["wald"][a], 1)) if math.isfinite(m["wald"][a]) else "< .001", ex(m["b"][a])]
-                           for a, name in enumerate(["(Pemalar)"] + ind)])
+                           for a, name in enumerate([_("(Pemalar)")] + ind)])
         pred = [int(p >= .5) for p in m["p"]]; cnt = Counter(zip(y, pred))
-        pc = lambda a: f"{100*cnt[a, a]/(cnt[a, 0]+cnt[a, 1]):.1f}"
-        out += ["", "Jadual Klasifikasi (titik potong 0.5)"] + self.table(["Sebenar \\ Ramalan", cats[0], cats[1], "% Betul"],
-               [[cats[0], cnt[0, 0], cnt[0, 1], pc(0)], [cats[1], cnt[1, 0], cnt[1, 1], pc(1)],
-                ["Keseluruhan", "", "", f"{100*(cnt[0, 0]+cnt[1, 1])/len(y):.1f}"]])
-        out += ["Panduan: Exp(B) > 1 = peluang Y=1 meningkat bila X naik satu unit; Exp(B) < 1 = menurun."]
-        self.write(f"Regresi Logistik: {dep} ~ {' + '.join(ind)}", out)
+        pc = lambda a: f"{100*cnt[a, a]/(cnt[a, 0]+cnt[a, 1]):.1f}"; tot = 100 * (cnt[0, 0] + cnt[1, 1]) / len(y)
+        out += ["", _("Jadual Klasifikasi (titik potong 0.5)")] + self.table([_("Sebenar \\ Ramalan"), cats[0], cats[1], _("% Betul")],
+               [[cats[0], cnt[0, 0], cnt[0, 1], pc(0)], [cats[1], cnt[1, 0], cnt[1, 1], pc(1)], [_("Keseluruhan"), "", "", f"{tot:.1f}"]])
+        out.append(_("Panduan: Exp(B) > 1 = peluang Y=1 meningkat bila X naik satu unit; Exp(B) < 1 = menurun."))
+        out += self.apa(_("Model regresi logistik adalah {res}, χ²({k}, N = {n}) = {x}, p {p}, R² Nagelkerke = {nk}, dan mengklasifikasikan {pc}% kes dengan betul.",
+                          res=sig(pmod, "signifikan", "tidak signifikan"), k=m["k"], n=m["n"], x=f2(m["chi2"]), p=pp(pmod), nk=nolead(m["nk"]), pc=f"{tot:.1f}"))
+        self.write(_("{t}: {a} ~ {b}", t=title, a=dep, b=" + ".join(ind)), out)
 
     def help(self):
-        messagebox.showinfo("Cara Guna",
-            "1. Masukkan data di 'Paparan Data' (dwiklik sel untuk edit) atau Fail > Buka CSV.\n"
-            "2. Setiap lajur = satu pemboleh ubah, setiap baris = satu kes.\n"
-            "3. Pilih ujian dari menu Analisis.\n"
-            "4. Keputusan keluar di 'Paparan Output'. Fail > Simpan Output untuk simpan.\n\n"
-            "Sig. < 0.05 biasanya bermaksud keputusan signifikan.")
+        messagebox.showinfo(_("Cara Guna"), _(
+            "1. Fail > Buka CSV / Excel, atau taip data di 'Paparan Data' (dwiklik sel untuk edit).\n"
+            "2. Setiap lajur = satu pemboleh ubah, setiap baris = satu kes (responden).\n"
+            "3. Bersihkan data dahulu melalui menu Data: Cari Kes Berulang, Semak Julat Sah, Kod Data Hilang, Analisis Data Hilang.\n"
+            "4. Songsangkan item negatif dan kira skor konstruk melalui menu Data.\n"
+            "5. Pilih ujian dari menu Analisis. Keputusan dan ayat laporan APA keluar di 'Paparan Output'.\n"
+            "6. Fail > Eksport Output ke HTML untuk menyalin jadual ke Word/LibreOffice.\n\n"
+            "Sig. < .05 biasanya bermaksud keputusan signifikan."))
 
 def main():
-    root = tk.Tk(); App(root); root.mainloop()
+    load_settings(); root = tk.Tk(); App(root); root.mainloop()
 
 if __name__ == "__main__":
     main()
