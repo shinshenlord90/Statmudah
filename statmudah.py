@@ -6,7 +6,7 @@ from tkinter import ttk, filedialog, messagebox, simpledialog
 from smstats import *
 from i18n import EN
 
-VERSION = "2.1"
+VERSION = "2.2"
 CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "statmudah", "settings.json")
 SET = {"lang": "ms"}
 
@@ -89,25 +89,25 @@ class Dialog(tk.Toplevel):
         self.grab_set(); self.wait_window()
 
 class PickDialog(Dialog):
-    """fields: senarai (label, pilih banyak?, angka sahaja?)."""
+    """fields: senarai (label, pilih banyak?, angka sahaja?[, pilihan?]). Medan pilihan boleh dibiarkan kosong."""
     def __init__(self, app, title, fields):
         super().__init__(app.root, title); self.boxes = []
-        for i, (label, multi, numeric) in enumerate(fields):
+        for i, (label, multi, numeric, *opt) in enumerate(fields):
             ttk.Label(self, text=label).grid(row=0, column=i, sticky="w", padx=8, pady=(8, 2))
             lb = tk.Listbox(self, selectmode="extended" if multi else "browse", exportselection=False,
                             height=12, width=24, font=FONT, selectbackground=SEL, selectforeground="black")
             names = [c for c in app.cols if not numeric or app.numeric(c)]
             for n in names: lb.insert("end", n)
-            lb.grid(row=1, column=i, padx=8); self.boxes.append((lb, names, multi))
-        if any(m for _l, m, _n in fields):
+            lb.grid(row=1, column=i, padx=8); self.boxes.append((lb, names, multi, bool(opt and opt[0])))
+        if any(f[1] for f in fields):
             ttk.Label(self, text=_("Tip: Ctrl+klik atau Shift+klik untuk pilih banyak.")).grid(row=2, column=0, columnspan=len(fields), sticky="w", padx=8)
         self.buttons(row=3, column=0, columnspan=len(fields))
     def ok(self):
         out = []
-        for lb, names, multi in self.boxes:
+        for lb, names, multi, optional in self.boxes:
             sel = [names[i] for i in lb.curselection()]
-            if not sel: return messagebox.showwarning(_("Pilih"), _("Sila pilih pemboleh ubah."), parent=self)
-            out.append(sel if multi else sel[0])
+            if not sel and not optional: return messagebox.showwarning(_("Pilih"), _("Sila pilih pemboleh ubah."), parent=self)
+            out.append(sel if multi else (sel[0] if sel else None))
         self.result = out; self.destroy()
 
 class FormDialog(Dialog):
@@ -161,24 +161,40 @@ def plot_ops(title, xs, ys, xl, yl, ref, W=380, H=280):
     ops += [("dot", px(x), py(y)) for x, y in zip(xs, ys)]
     return Plot((ops, W, H))
 
+def slopes_ops(title, lines, xl, yl, W=420, H=300):
+    """Plot simple slopes: lines = [(label, warna, x0, y0, x1, y1)]."""
+    L, B = 50, 40
+    x0, x1 = min(l[2] for l in lines), max(l[4] for l in lines)
+    ys = [v for l in lines for v in (l[3], l[5])]; y0, y1 = min(ys), max(ys)
+    x1, y1 = (x1 if x1 > x0 else x0 + 1), (y1 if y1 > y0 else y0 + 1)
+    px = lambda v: L + (v - x0) / (x1 - x0) * (W - L - 130); py = lambda v: H - B - (v - y0) / (y1 - y0) * (H - B - 30)
+    ops = [("text", W / 2, 12, title, "center", 0, True), ("rect", L, 30, W - 130, H - B)]
+    ops += [("text", px(v), H - B + 10, f"{v:.3g}", "center", 0, False) for v in (x0, x1)]
+    ops += [("text", L - 4, py(v), f"{v:.3g}", "e", 0, False) for v in (y0, y1)]
+    ops += [("text", (W - 80) / 2, H - 10, xl, "center", 0, False), ("text", 12, H / 2 - B / 2, yl, "center", 90, False)]
+    for i, (lab, col, a, b, c, d) in enumerate(lines):
+        ops.append(("seg", px(a), py(b), px(c), py(d), col)); yy = 45 + 20 * i
+        ops += [("seg", W - 120, yy, W - 100, yy, col), ("text", W - 95, yy, lab, "w", 0, False)]
+    return Plot((ops, W, H))
+
 def draw_canvas(c, ops):
     for o in ops:
-        if o[0] == "text": c.create_text(o[1], o[2], text=o[3], anchor={"center": "center", "e": "e"}[o[4]], angle=o[5],
+        if o[0] == "text": c.create_text(o[1], o[2], text=o[3], anchor={"center": "center", "e": "e", "w": "w"}[o[4]], angle=o[5],
                                          font=("DejaVu Sans", 9, "bold") if o[6] else FONT, fill="#1E3A8A" if o[6] else "black")
         elif o[0] == "rect": c.create_rectangle(*o[1:], outline="#888")
         elif o[0] == "line": c.create_line(*o[1:], fill="#C0392B", dash=(4, 2))
-        elif o[0] == "seg": c.create_line(*o[1:], fill="#3C7FB1", width=1.5)
+        elif o[0] == "seg": c.create_line(*o[1:5], fill=o[5] if len(o) > 5 else "#3C7FB1", width=1.5 if len(o) < 6 else 2.5)
         else: c.create_oval(o[1] - 3, o[2] - 3, o[1] + 3, o[2] + 3, fill="#3C7FB1", outline="#1E3A8A")
 
 def svg(ops, W, H):
     e = html.escape; out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" font-family="DejaVu Sans, Arial" font-size="11"><rect width="{W}" height="{H}" fill="white"/>']
     for o in ops:
         if o[0] == "text":
-            anc = {"center": "middle", "e": "end"}[o[4]]; rot = f' transform="rotate(-{o[5]} {o[1]:.1f} {o[2]:.1f})"' if o[5] else ""
+            anc = {"center": "middle", "e": "end", "w": "start"}[o[4]]; rot = f' transform="rotate(-{o[5]} {o[1]:.1f} {o[2]:.1f})"' if o[5] else ""
             out.append(f'<text x="{o[1]:.1f}" y="{o[2] + 4:.1f}" text-anchor="{anc}"{rot}{" font-weight=\"bold\"" if o[6] else ""}>{e(o[3])}</text>')
         elif o[0] == "rect": out.append(f'<rect x="{o[1]}" y="{o[2]}" width="{o[3] - o[1]}" height="{o[4] - o[2]}" fill="none" stroke="#888"/>')
         elif o[0] == "line": out.append(f'<line x1="{o[1]:.1f}" y1="{o[2]:.1f}" x2="{o[3]:.1f}" y2="{o[4]:.1f}" stroke="#C0392B" stroke-dasharray="4 2"/>')
-        elif o[0] == "seg": out.append(f'<line x1="{o[1]:.1f}" y1="{o[2]:.1f}" x2="{o[3]:.1f}" y2="{o[4]:.1f}" stroke="#3C7FB1" stroke-width="1.5"/>')
+        elif o[0] == "seg": out.append(f'<line x1="{o[1]:.1f}" y1="{o[2]:.1f}" x2="{o[3]:.1f}" y2="{o[4]:.1f}" stroke="{o[5] if len(o) > 5 else "#3C7FB1"}" stroke-width="{1.5 if len(o) < 6 else 2.5}"/>')
         else: out.append(f'<circle cx="{o[1]:.1f}" cy="{o[2]:.1f}" r="3" fill="#3C7FB1" stroke="#1E3A8A"/>')
     return "".join(out) + "</svg>"
 
@@ -250,11 +266,13 @@ class App:
                             (_("Skala"), [(_("Kebolehpercayaan (Cronbach's Alpha)..."), self.reliability),
                                           (_("Analisis Faktor Penerokaan (EFA)..."), self.efa)]), None,
                             (_("Ujian-t Sampel Bebas..."), self.ttest), (_("Ujian-t Berpasangan..."), self.paired),
-                            (_("ANOVA Sehala..."), self.anova), (_("ANOVA Dua Hala..."), self.anova2), (_("Khi Kuasa Dua..."), self.chisq), None,
+                            (_("ANOVA Sehala..."), self.anova), (_("ANOVA Dua Hala..."), self.anova2), (_("ANCOVA..."), self.ancova),
+                            (_("Khi Kuasa Dua..."), self.chisq), None,
                             (_("Ujian Bukan Parametrik"), [(_("Mann-Whitney U (2 kumpulan bebas)..."), self.mannwhitney),
                                                            (_("Wilcoxon (2 ukuran berpasangan)..."), self.wilcoxon),
                                                            (_("Kruskal-Wallis (≥3 kumpulan)..."), self.kruskal)]), None,
-                            (_("Regresi Linear..."), self.regression), (_("Regresi Logistik (Binari)..."), self.logistic)])
+                            (_("Regresi Linear..."), self.regression), (_("Regresi Hierarki..."), self.hierarchical), (_("Regresi Logistik (Binari)..."), self.logistic), None,
+                            (_("Mediasi & Moderasi (seperti PROCESS)"), [(_("Mediasi (Model 4)..."), self.mediation), (_("Moderasi (Model 1)..."), self.moderation)])])
         sub(_("Bantuan"), [(_("Cara Guna"), self.help), (_("Bahasa / Language"), [("Bahasa Melayu", lambda: self.set_lang("ms")), ("English", lambda: self.set_lang("en"))]),
                            (_("Perihal"), lambda: messagebox.showinfo(_("Perihal"), _("StatMudah {v}\nAnalisis statistik mudah.", v=VERSION)))])
         for k, f in (("n", self.new), ("o", self.open), ("s", self.save)): self.root.bind(f"<Control-{k}>", lambda e, f=f: f())
@@ -419,8 +437,11 @@ class App:
 
     def write(self, title, items):
         self.blocks.append(("h", title)); self.out.insert("end", title + "\n", "h")
+        prev_plot = False
         for it in items:
             self.blocks.append(it)
+            if prev_plot and not isinstance(it, Plot): self.out.insert("end", "\n")  # teks selepas plot bermula pada baris baru
+            prev_plot = isinstance(it, Plot)
             if isinstance(it, Table): self.out.insert("end", "\n".join(it.ascii()) + "\n")
             elif isinstance(it, Apa): self.out.insert("end", it + "\n", "apa")
             elif isinstance(it, Plot):
@@ -979,6 +1000,169 @@ class App:
         out += self.apa(_("Ujian satu faktor Harman (PCA tanpa putaran) menunjukkan bahawa faktor pertama menerangkan {pc}% daripada jumlah varians, iaitu {cmp} ambang 50%.",
                           pc=f"{pc:.2f}", cmp=_("di bawah") if pc < 50 else _("melebihi")))
         self.write(title, out)
+
+    # ----- Fasa 3: model -----
+    def coef_table(self, m, names, dfe, beta=False):
+        """Jadual pekali B, RP, t, p, SK 95% daripada keputusan ols."""
+        tc = qt(.05, dfe); head = ["", "B", _("RP"), "t", "Sig.", _("SK 95% Bawah"), _("SK 95% Atas")] + (["Beta"] if beta else [])
+        rows = []
+        for a, nm in enumerate([_("(Pemalar)")] + names):
+            b, se, tv = m["b"][a], m["se"][a], m["t"][a]
+            rows.append([nm, f"{b:.3f}", f"{se:.3f}", f"{tv:.3f}", fp(p_t(tv, dfe)) if math.isfinite(tv) else "< .001", f"{b - tc * se:.3f}", f"{b + tc * se:.3f}"]
+                        + ([("" if a == 0 else f"{m['beta'][a]:.3f}")] if beta else []))
+        return self.table(head, rows)
+
+    def model_line(self, m):
+        pm = p_f(m["f"], m["k"], m["dfe"]) if math.isfinite(m["f"]) else 0.0
+        return self.table(["R", "R²", "F", _("dk") + "1", _("dk") + "2", "Sig."], [[f"{math.sqrt(max(0, m['r2'])):.3f}", f"{m['r2']:.3f}", f"{m['f']:.3f}", m["k"], m["dfe"], fp(pm)]])
+
+    def mediation(self):
+        title = _("Mediasi (Model 4)")
+        r = PickDialog(self, title, [(_("Y (hasil):"), False, True), (_("X (peramal):"), False, True), (_("M (pengantara, boleh >1):"), True, True),
+                                     (_("Kovariat (pilihan):"), True, True, True)]).result
+        if not r: return
+        y, x, ms, cs = r
+        if len({y, x, *ms, *cs}) != 2 + len(ms) + len(cs): return messagebox.showwarning(title, _("Setiap pemboleh ubah hanya boleh dipilih dalam satu peranan."))
+        f = FormDialog(self, title, [("entry", _("Bilangan sampel bootstrap:"), "5000"), ("entry", _("Seed (untuk keputusan boleh diulang):"), "12345")]).result
+        if not f: return
+        try: boots, seed = int(f[0]), int(f[1])
+        except ValueError: return messagebox.showwarning(title, _("Bilangan bootstrap dan seed mesti nombor bulat."))
+        if boots < 1000: return messagebox.showwarning(title, _("Gunakan sekurang-kurangnya 1000 sampel bootstrap (5000 disyorkan)."))
+        ids, rows = self.complete([y, x] + ms + cs); k = len(ms)
+        if len(rows) < len(ms) + len(cs) + 5: return messagebox.showwarning(title, _("Kes lengkap tidak mencukupi."))
+        Y, X = [r_[0] for r_ in rows], [r_[1] for r_ in rows]; M = [r_[2:2 + k] for r_ in rows]; C = [r_[2 + k:] for r_ in rows]
+        old = self.status["text"]; self.root.config(cursor="watch")
+        def prog(i, n):
+            self.status["text"] = _("  Bootstrap {i} / {n} ...", i=i, n=n); self.root.update_idletasks()
+        try: res = mediation(Y, X, M, C, boots, seed, prog)
+        finally: self.root.config(cursor=""); self.status["text"] = old
+        if res is None: return messagebox.showwarning(title, _("Tidak boleh dikira: peramal berkolinear atau data tidak mencukupi."))
+        out = [_("Y = {y}; X = {x}; M = {m}; kovariat = {c}; N = {n}; bootstrap = {b} sampel (seed {s}); SK persentil 95%.",
+                 y=y, x=x, m=", ".join(ms), c=", ".join(cs) or "-", n=res["n"], b=res["boots"], s=seed)]
+        for j, mj in enumerate(ms):
+            am = res["a"][j]; out += ["", _("Model hasil: {v}", v=mj)] + self.model_line(am) + self.coef_table(am, [x] + cs, am["dfe"])
+        ym = res["y"]; out += ["", _("Model hasil: {v}", v=y)] + self.model_line(ym) + self.coef_table(ym, [x] + ms + cs, ym["dfe"])
+        tm = res["total"]; tc = qt(.05, tm["dfe"]); dc = qt(.05, ym["dfe"])
+        c, cse, cp = tm["b"][1], tm["se"][1], p_t(tm["t"][1], tm["dfe"]); d_, dse, dp = ym["b"][1], ym["se"][1], p_t(ym["t"][1], ym["dfe"])
+        out += ["", _("Kesan Jumlah, Langsung dan Tidak Langsung X ke atas Y")] + self.table(
+            [_("Kesan"), _("Anggaran"), _("RP"), "t", "Sig.", _("SK 95% Bawah"), _("SK 95% Atas")],
+            [[_("Jumlah (c)"), f"{c:.3f}", f"{cse:.3f}", f"{tm['t'][1]:.3f}", fp(cp), f"{c - tc * cse:.3f}", f"{c + tc * cse:.3f}"],
+             [_("Langsung (c')"), f"{d_:.3f}", f"{dse:.3f}", f"{ym['t'][1]:.3f}", fp(dp), f"{d_ - dc * dse:.3f}", f"{d_ + dc * dse:.3f}"]])
+        names = [f"{x} → {mj} → {y}" for mj in ms] + ([_("Jumlah tidak langsung")] if k > 1 else [])
+        rows = [[nm, f"{res['ind'][j]:.4f}", f"{res['ci'][j][2]:.4f}", f"{res['ci'][j][0]:.4f}", f"{res['ci'][j][1]:.4f}",
+                 _("Ya") if res["ci"][j][0] > 0 or res["ci"][j][1] < 0 else _("Tidak")] for j, nm in enumerate(names)]
+        out += ["", _("Kesan Tidak Langsung (bootstrap)")] + self.table([_("Laluan"), _("Kesan"), _("Boot RP"), _("Boot SK Bawah"), _("Boot SK Atas"), _("Signifikan?")], rows)
+        out.append(_("Panduan: kesan tidak langsung signifikan jika SK bootstrap tidak merangkumi 0. Laluan a = X → M, b = M → Y (mengawal X), c' = kesan langsung."))
+        sent = [_("Kesan tidak langsung {x} terhadap {y} melalui {m} adalah {res}, ab = {ab}, 95% SK bootstrap [{lo}, {hi}].", x=x, y=y, m=mj,
+                  res=sig(0 if rows[j][5] == _("Ya") else 1, "signifikan", "tidak signifikan"), ab=f"{res['ind'][j]:.3f}",
+                  lo=f"{res['ci'][j][0]:.3f}", hi=f"{res['ci'][j][1]:.3f}") for j, mj in enumerate(ms)]
+        sent.append(_("Kesan langsung {x} terhadap {y} adalah {res}, c' = {c}, t({df}) = {t}, p {p}.", x=x, y=y, res=sig(dp, "signifikan", "tidak signifikan"),
+                      c=f2(d_), df=ym["dfe"], t=f2(ym["t"][1]), p=pp(dp)))
+        out += self.apa(" ".join(sent))
+        self.write(_("{t}: {x} → {m} → {y}", t=title, x=x, m=", ".join(ms), y=y), out)
+
+    def moderation(self):
+        title = _("Moderasi (Model 1)")
+        r = PickDialog(self, title, [(_("Y (hasil):"), False, True), (_("X (peramal):"), False, True), (_("W (penyederhana):"), False, True),
+                                     (_("Kovariat (pilihan):"), True, True, True)]).result
+        if not r: return
+        y, x, w, cs = r
+        if len({y, x, w, *cs}) != 3 + len(cs): return messagebox.showwarning(title, _("Setiap pemboleh ubah hanya boleh dipilih dalam satu peranan."))
+        ids, rows = self.complete([y, x, w] + cs)
+        if len(rows) < len(cs) + 6: return messagebox.showwarning(title, _("Kes lengkap tidak mencukupi."))
+        W = [r_[2] for r_ in rows]; lv = sorted(set(W))
+        binary = len(lv) == 2; recode = binary and lv != [0.0, 1.0]
+        if recode: W = [0.0 if v == lv[0] else 1.0 for v in W]  # W binari dikodkan semula kepada 0/1
+        if not binary and len(lv) < 5: return messagebox.showwarning(title, _("W mesti berterusan atau binari 0/1. Moderator dengan 3–4 kategori tidak disokong."))
+        Y, X, C = [r_[0] for r_ in rows], [r_[1] for r_ in rows], [r_[3:] for r_ in rows]
+        res = moderation(Y, X, W, C, binary)
+        if res is None: return messagebox.showwarning(title, _("Tidak boleh dikira: peramal berkolinear atau data tidak mencukupi."))
+        m = res["model"]
+        out = [_("Y = {y}; X = {x}; W = {w} ({t}); kovariat = {c}; N = {n}.", y=y, x=x, w=w, t=_("binari 0/1") if binary else _("berterusan"), c=", ".join(cs) or "-", n=res["n"]),
+               _("X dipusatkan pada min ({mx}).", mx=f"{res['mx']:.3f}") + ("" if binary else " " + _("W dipusatkan pada min ({mw}).", mw=f"{res['mw']:.3f}"))]
+        if recode: out.append(_("W dikodkan semula: {a} = 0, {b} = 1.", a=fmtn(lv[0]), b=fmtn(lv[1])))
+        out += self.model_line(m) + self.coef_table(m, [x, w, f"{x} × {w}"] + cs, m["dfe"])
+        out += ["", _("Ujian Interaksi (perubahan R²)")] + self.table(["ΔR²", "F", _("dk") + "1", _("dk") + "2", "Sig."], [[f"{res['dr2']:.3f}", f"{res['fch']:.3f}", 1, m["dfe"], fp(res["pch"])]])
+        labs = [fmtn(lv[int(c["w"])]) for c in res["cond"]] if binary else [_("−1 SP ({v})", v=f"{res['cond'][0]['w']:.2f}"), _("Min ({v})", v=f"{res['cond'][1]['w']:.2f}"), _("+1 SP ({v})", v=f"{res['cond'][2]['w']:.2f}")]
+        out += ["", _("Kesan Bersyarat X pada Aras W (simple slopes)")] + self.table(
+            ["W", _("Kesan"), _("RP"), "t", "Sig.", _("SK 95% Bawah"), _("SK 95% Atas")],
+            [[lb, f"{c['eff']:.3f}", f"{c['se']:.3f}", f"{c['t']:.3f}", fp(c["p"]), f"{c['lo']:.3f}", f"{c['hi']:.3f}"] for lb, c in zip(labs, res["cond"])])
+        out.append(_("Panduan: jika interaksi signifikan, tafsir kesan X pada setiap aras W (simple slopes)."))
+        cm = [st.mean(c_[j] for c_ in C) for j in range(len(cs))]; b = m["b"]; sx = res["sdx"]
+        pred = lambda xc, wv: b[0] + b[1] * xc + b[2] * wv + b[3] * xc * wv + sum(bb * mm for bb, mm in zip(b[4:], cm))
+        cols = ["#1E3A8A", "#C0392B", "#2E7D32"]
+        lines = [(lb, cols[i], res["mx"] - sx, pred(-sx, c["w"] - res["mw"]), res["mx"] + sx, pred(sx, c["w"] - res["mw"])) for i, (lb, c) in enumerate(zip(labs, res["cond"]))]
+        out.append(slopes_ops(_("Simple Slopes"), lines, _("{x} (min ± 1 SP)", x=x), y))
+        pint = p_t(m["t"][3], m["dfe"]) if math.isfinite(m["t"][3]) else 0.0
+        sent = [_("Interaksi {x} × {w} terhadap {y} adalah {res}, B = {b}, t({df}) = {t}, p {p}, ΔR² = {dr}.", x=x, w=w, y=y, res=sig(pint, "signifikan", "tidak signifikan"),
+                  b=f2(b[3]), df=m["dfe"], t=f2(m["t"][3]), p=pp(pint), dr=nolead(res["dr2"]))]
+        sent += [_("Pada {w} = {lv}, kesan {x} adalah {res} (B = {b}, p {p}).", w=w, lv=lb, x=x, res=sig(c["p"], "signifikan", "tidak signifikan"), b=f2(c["eff"]), p=pp(c["p"]))
+                 for lb, c in zip(labs, res["cond"])]
+        out += self.apa(" ".join(sent))
+        self.write(_("{t}: {x} × {w} → {y}", t=title, x=x, w=w, y=y), out)
+
+    def hierarchical(self):
+        title = _("Regresi Hierarki")
+        r = PickDialog(self, title, [(_("Pemboleh ubah bersandar (Y):"), False, True), (_("Blok 1:"), True, True), (_("Blok 2:"), True, True),
+                                     (_("Blok 3 (pilihan):"), True, True, True)]).result
+        if not r: return
+        y, *blocks = r; blocks = [b for b in blocks if b]; allv = [v for b in blocks for v in b]
+        if len(set([y] + allv)) != 1 + len(allv): return messagebox.showwarning(title, _("Setiap pemboleh ubah hanya boleh dipilih sekali (Y dan blok tidak boleh bertindih)."))
+        ids, rows = self.complete([y] + allv)
+        if len(rows) < len(allv) + 3: return messagebox.showwarning(title, _("Kes lengkap tidak mencukupi."))
+        Y = [r_[0] for r_ in rows]; col = {v: [r_[1 + i] for r_ in rows] for i, v in enumerate(allv)}
+        res = hier_reg(Y, [[col[v] for v in b] for b in blocks])
+        if res is None: return messagebox.showwarning(title, _("Tidak boleh dikira: peramal berkolinear atau data tidak mencukupi."))
+        out = [_("N = {n} kes lengkap. {b}", n=len(rows), b="; ".join(_("Blok {i}: {v}", i=i + 1, v=", ".join(b)) for i, b in enumerate(blocks)))]
+        out += self.table([_("Model"), "R", "R²", _("R² Terlaras"), _("Ralat Piawai Anggaran"), "ΔR²", _("F perubahan"), _("dk") + "1", _("dk") + "2", _("Sig. F perubahan")],
+                          [[i + 1, f"{math.sqrt(max(0, h['m']['r2'])):.3f}", f"{h['m']['r2']:.3f}", f"{h['m']['adj']:.3f}", f"{h['m']['see']:.3f}",
+                            f"{h['dr2']:.3f}", f"{h['fch']:.3f}", h["df1"], h["df2"], fp(h["pch"])] for i, h in enumerate(res)])
+        names = []
+        for i, (b, h) in enumerate(zip(blocks, res)):
+            names += b; out += ["", _("Pekali Model {i}", i=i + 1)] + self.coef_table(h["m"], names, h["m"]["dfe"], beta=True)
+        sent = [_("Model 1 ({v}) menerangkan {pc}% varians dalam {y}, F({d1}, {d2}) = {f}, p {p}.", v=", ".join(blocks[0]), pc=f"{100 * res[0]['m']['r2']:.1f}", y=y,
+                  d1=res[0]["df1"], d2=res[0]["df2"], f=f2(res[0]["fch"]), p=pp(res[0]["pch"]))]
+        sent += [_("Penambahan Blok {i} ({v}) menerangkan tambahan {pc}% varians yang {res}, ΔR² = {dr}, F perubahan({d1}, {d2}) = {f}, p {p}.", i=i + 1, v=", ".join(blocks[i]),
+                   pc=f"{100 * h['dr2']:.1f}", res=sig(h["pch"], "signifikan", "tidak signifikan"), dr=nolead(h["dr2"]), d1=h["df1"], d2=h["df2"], f=f2(h["fch"]), p=pp(h["pch"]))
+                 for i, h in enumerate(res) if i > 0]
+        out += self.apa(" ".join(sent))
+        self.write(_("{t}: {y}", t=title, y=y), out)
+
+    def ancova(self):
+        title = "ANCOVA"
+        r = PickDialog(self, title, [(_("Pemboleh ubah bersandar:"), False, True), (_("Faktor (kumpulan):"), False, False), (_("Kovariat:"), True, True)]).result
+        if not r: return
+        y, gv, cs = r
+        if len({y, gv, *cs}) != 2 + len(cs): return messagebox.showwarning(title, _("Setiap pemboleh ubah hanya boleh dipilih dalam satu peranan."))
+        gi = self.cols.index(gv); ids, rows = self.complete([y] + cs)
+        data = [(r_, self.rows[k][gi].strip()) for k, r_ in zip(ids, rows) if not self.blank(self.rows[k][gi])]
+        G = [g for _r, g in data]; Y = [r_[0] for r_, _g in data]; C = [r_[1:] for r_, _g in data]
+        if len(set(G)) < 2 or len(data) < len(set(G)) + len(cs) + 2: return messagebox.showwarning(title, _("Perlu ≥2 kumpulan dan data mencukupi."))
+        a = ancova(Y, G, C)
+        if a is None: return messagebox.showwarning(title, _("Tidak boleh dikira: kovariat berkolinear atau data tidak mencukupi."))
+        mse = a["sse"] / a["dfe"]; tc = a["tc"]
+        out = [_("N = {n}; faktor = {g}; kovariat = {c}.", n=a["n"], g=gv, c=", ".join(cs))]
+        out += self.table([_("Kumpulan"), "N", _("Min asal"), _("Min terlaras"), _("RP"), _("SK 95% Bawah"), _("SK 95% Atas")],
+                          [[l, n, f"{m0:.3f}", f"{m1:.3f}", f"{se:.3f}", f"{m1 - tc * se:.3f}", f"{m1 + tc * se:.3f}"] for l, n, m0, m1, se in a["adj"]])
+        out.append(_("Min terlaras dinilai pada min kovariat: {v}.", v=", ".join(f"{c} = {st.mean(r_[j] for r_ in C):.3f}" for j, c in enumerate(cs))))
+        if a["hom"]:
+            fh, d1, d2, ph = a["hom"]
+            out += ["", _("Kehomogenan Kecerunan Regresi (interaksi kumpulan × kovariat)")] + self.table(["F", _("dk") + "1", _("dk") + "2", "Sig."], [[f"{fh:.3f}", d1, d2, fp(ph)]])
+            out.append(_("Andaian dipenuhi (Sig. ≥ .05).") if ph >= .05 else _("AMARAN: andaian kehomogenan kecerunan dilanggar (Sig. < .05) — kesan kovariat berbeza antara kumpulan; tafsir ANCOVA dengan berhati-hati."))
+        e = a["full"]["e"]; L = levene([[v for v, g in zip(e, G) if g == l] for l in a["levels"]])
+        out += ["", _("Ujian Levene (atas reja model)")] + self.table(["F", _("dk") + "1", _("dk") + "2", "Sig."], [[f"{L[0]:.3f}", L[1], L[2], fp(p_f(*L[:3]))]] if L else [["-"] * 4])
+        rows = []
+        for j, ss, df in a["terms"][1:] + a["terms"][:1]:
+            fv = (ss / df) / mse; pv = p_f(fv, df, a["dfe"]); rows.append([cs[j] if j is not None else gv, f"{ss:.3f}", df, f"{ss/df:.3f}", f"{fv:.3f}", fp(pv), f"{ss / (ss + a['sse']):.3f}"])
+        rows += [[_("Ralat"), f"{a['sse']:.3f}", a["dfe"], f"{mse:.3f}", "", "", ""], [_("Jumlah terbetul"), f"{a['full']['sst']:.3f}", a["n"] - 1, "", "", "", ""]]
+        out += self.table([_("Sumber"), _("JK Jenis III"), _("dk"), _("MK"), "F", "Sig.", "η²p"], rows)
+        if len(a["levels"]) >= 3:
+            out += ["", _("Perbandingan Berpasangan Min Terlaras (Bonferroni)")] + self.table(["(I)", "(J)", _("Beza Min (I-J)"), _("RP"), _("Sig. (Bonferroni)")],
+                   [[i, j, f"{d:.3f}" + ("*" if p < .05 else ""), f"{se:.3f}", fp(p)] for i, j, d, se, p in a["pairs"]])
+        ss, df = a["terms"][0][1], a["terms"][0][2]; fv = (ss / df) / mse; pv = p_f(fv, df, a["dfe"])
+        out += self.apa(_("ANCOVA menunjukkan kesan {g} {res} terhadap {y} selepas mengawal {c}, F({d1}, {d2}) = {f}, p {p}, η²p = {e}.", g=gv,
+                          res=sig(pv, "yang signifikan", "yang tidak signifikan"), y=y, c=", ".join(cs), d1=df, d2=a["dfe"], f=f2(fv), p=pp(pv), e=nolead(ss / (ss + a["sse"]))))
+        self.write(_("{t}: {a} mengikut {b}", t=title, a=y, b=gv), out)
 
     def help(self):
         messagebox.showinfo(_("Cara Guna"), _(

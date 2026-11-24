@@ -50,3 +50,16 @@ cols = [[abs(r[j]) for r in V] for j in range(2)]; rc = [[r[j] for r in ref] for
 assert all(min(max(abs(a - b) for a, b in zip(c, rcol)) for c in cols) < 1e-5 for rcol in rc)  # sama hingga tanda & susunan
 assert s.kmo_bartlett([[1, 1], [1, 1]], 10) is None and s.mahalanobis([[1, 2], [2, 4], [3, 6]]) is None  # singular
 print("fasa 2 statistik ok")
+# Fasa 3: rujukan statsmodels 0.15 / scipy 1.18
+y, x, m, w = [3, 5, 4, 6, 8, 7, 9, 6, 5, 8, 10, 7], [1, 2, 2, 3, 4, 4, 5, 3, 2, 4, 6, 5], [2, 3, 2, 4, 5, 4, 6, 4, 3, 5, 6, 5], [0, 1] * 6
+g, c = list("AABBCCAABBCC"), [5, 3, 4, 6, 2, 5, 7, 3, 4, 6, 5, 2]
+assert abs(s.qt(.05, 10) - 2.228139) < 1e-5
+md = s.mediation(y, x, [[v] for v in m], [[] for _v in y], boots=1000, seed=1)
+assert abs(md["a"][0]["b"][1] - .866221) < 1e-5 and abs(md["y"]["b"][2] - 1.057229) < 1e-5 and abs(md["y"]["b"][1] - .388554) < 1e-5
+assert md["ci"] == s.mediation(y, x, [[v] for v in m], [[] for _v in y], boots=1000, seed=1)["ci"]  # seed sama -> SK sama
+mo = s.moderation(y, x, [float(v) for v in w], [[] for _v in y], True)
+assert abs(mo["model"]["b"][3] - -.630094) < 1e-5 and abs(mo["cond"][0]["eff"] - 1.448276) < 1e-5 and abs(mo["cond"][1]["eff"] - .818182) < 1e-5
+h = s.hier_reg(y, [[c], [x, m]]); assert abs(h[1]["dr2"] - .909745) < 1e-5 and abs(h[1]["fch"] - 85.114156) < 1e-4
+an = s.ancova(y, g, [[v] for v in c]); mse = an["sse"] / an["dfe"]
+assert abs(an["terms"][0][1] / an["terms"][0][2] / mse - 3.623369) < 1e-5 and abs(an["terms"][1][1] / mse - 3.409313) < 1e-5
+print("fasa 3 statistik ok")

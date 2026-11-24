@@ -67,7 +67,7 @@ def ols(y, xs):
     return dict(n=n, k=k, b=b, se=se, beta=[None] + [b[a + 1] * sx[a] / sy for a in range(k)],
                 t=[b[a] / se[a] if se[a] else math.inf for a in range(k + 1)], r2=ssr / sst,
                 adj=1 - (sse / dfe) / (sst / (n - 1)), see=math.sqrt(mse), ssr=ssr, sse=sse, sst=sst, dfe=dfe,
-                f=(ssr / k) / mse if mse else math.inf, yhat=yhat, e=e)
+                f=(ssr / k) / mse if mse else math.inf, yhat=yhat, e=e, cov=[[mse * v for v in r] for r in inv])
 
 def vif(xs):
     """VIF setiap peramal: 1/(1-R²) bila diregres atas peramal lain."""
@@ -468,3 +468,129 @@ def mahalanobis(rows):
         d = [x - mu for x, mu in zip(r, m)]; d2 = sum(d[i] * Si[i][j] * d[j] for i in range(k) for j in range(k))
         out.append((d2, p_chi2(d2, k)))
     return out
+
+
+# ---------- Fasa 3: mediasi, moderasi, regresi hierarki, ANCOVA ----------
+def qt(alpha, df):
+    """Nilai t kritikal dua hujung: p_t(t, df) = alpha (pembahagian dua)."""
+    lo, hi = 0.0, 1000.0
+    for _i in range(100):
+        mid = (lo + hi) / 2
+        if p_t(mid, df) > alpha: lo = mid
+        else: hi = mid
+    return (lo + hi) / 2
+
+def effect_codes(v, levels):
+    """Pengekodan kesan (sum-to-zero): aras terakhir = -1 pada semua lajur."""
+    return [1.0 if v == levels[i] else -1.0 if v == levels[-1] else 0.0 for i in range(len(levels) - 1)]
+
+def _beta(y, X):
+    """Pekali OLS sahaja (X sudah termasuk pintasan) - laju untuk bootstrap. None jika singular."""
+    p = len(X[0]); xtx = [[0.0] * p for _i in range(p)]; xty = [0.0] * p
+    for r, yi in zip(X, y):
+        for a in range(p):
+            ra = r[a]; xty[a] += ra * yi; row = xtx[a]
+            for b in range(a, p): row[b] += ra * r[b]
+    for a in range(p):
+        for b in range(a): xtx[a][b] = xtx[b][a]
+    inv = inverse(xtx)
+    return None if inv is None else [sum(inv[a][c] * xty[c] for c in range(p)) for a in range(p)]
+
+def _indirect(y, x, ms, cs, idx):
+    """Kesan tidak langsung a_i*b_i bagi sampel indeks idx (untuk bootstrap)."""
+    k = len(ms[0]); out = []; bs = None
+    Xy = [[1.0, x[i]] + ms[i] + cs[i] for i in idx]; bs = _beta([y[i] for i in idx], Xy)
+    if bs is None: return None
+    for j in range(k):
+        ba = _beta([ms[i][j] for i in idx], [[1.0, x[i]] + cs[i] for i in idx])
+        if ba is None: return None
+        out.append(ba[1] * bs[2 + j])
+    return out
+
+def mediation(y, x, ms, cs, boots=5000, seed=12345, progress=None):
+    """Mediasi selari (seperti PROCESS Model 4). ms: senarai nilai mediator setiap kes; cs: kovariat setiap kes.
+    Pulangkan dict laluan a, b, c, c' (dari ols) dan kesan tidak langsung dengan SK bootstrap persentil 95%."""
+    import random
+    n, k = len(y), len(ms[0])
+    am = [ols([m[j] for m in ms], [[xi] + c for xi, c in zip(x, cs)]) for j in range(k)]
+    ym = ols(y, [[xi] + m + c for xi, m, c in zip(x, ms, cs)]); tm = ols(y, [[xi] + c for xi, c in zip(x, cs)])
+    if ym is None or tm is None or None in am: return None
+    ind = [am[j]["b"][1] * ym["b"][2 + j] for j in range(k)]
+    rnd = random.Random(seed); draws = []; tries = 0
+    while len(draws) < boots and tries < boots * 2:
+        tries += 1; idx = [rnd.randrange(n) for _i in range(n)]; r = _indirect(y, x, ms, cs, idx)
+        if r is not None: draws.append(r + [sum(r)])
+        if progress and tries % 250 == 0: progress(len(draws), boots)
+    if len(draws) < boots * .9: return None
+    def ci(j):
+        v = sorted(d[j] for d in draws); B = len(v)
+        return v[max(0, int(.025 * B))], v[min(B - 1, int(.975 * B))], st.stdev(v)
+    return dict(n=n, k=k, a=am, y=ym, total=tm, ind=ind + [sum(ind)], ci=[ci(j) for j in range(k + 1)], boots=len(draws), seed=seed)
+
+def moderation(y, x, w, cs, binary):
+    """Moderasi (seperti PROCESS Model 1). X dan W berterusan dipusatkan pada min; W binari (0/1) tidak dipusatkan.
+    Pulangkan model penuh, perubahan R² interaksi, dan kesan bersyarat X pada aras W."""
+    n = len(y); mx = st.mean(x); mw = 0.0 if binary else st.mean(w)
+    xc = [v - mx for v in x]; wc = [v - mw for v in w]
+    full = ols(y, [[a, b, a * b] + c for a, b, c in zip(xc, wc, cs)]); red = ols(y, [[a, b] + c for a, b, c in zip(xc, wc, cs)])
+    if full is None or red is None: return None
+    dr2 = full["r2"] - red["r2"]; fch = dr2 / ((1 - full["r2"]) / full["dfe"]) if full["r2"] < 1 else math.inf
+    sdw = st.stdev(w); levels = sorted(set(w)) if binary else [mw - sdw, mw, mw + sdw]
+    tc = qt(.05, full["dfe"]); cond = []
+    for lv in levels:
+        wv = lv - mw; eff = full["b"][1] + full["b"][3] * wv
+        se = math.sqrt(max(0.0, full["cov"][1][1] + wv * wv * full["cov"][3][3] + 2 * wv * full["cov"][1][3]))
+        t = eff / se if se else math.inf
+        cond.append(dict(w=lv, eff=eff, se=se, t=t, p=p_t(t, full["dfe"]) if se else 0.0, lo=eff - tc * se, hi=eff + tc * se))
+    return dict(n=n, model=full, dr2=dr2, fch=fch, pch=p_f(fch, 1, full["dfe"]) if math.isfinite(fch) else 0.0,
+                cond=cond, mx=mx, mw=mw, sdx=st.stdev(x), centred_w=not binary)
+
+def hier_reg(y, blocks):
+    """Regresi hierarki. blocks: senarai blok; setiap blok = senarai lajur nilai (setiap lajur = senarai mengikut kes).
+    Pulangkan senarai model dengan R², ΔR², F perubahan."""
+    out, cols, prev = [], [], 0.0
+    for b in blocks:
+        cols = cols + b; m = ols(y, [list(r) for r in zip(*cols)])
+        if m is None: return None
+        df1 = len(b); dr2 = m["r2"] - prev
+        fch = (dr2 / df1) / ((1 - m["r2"]) / m["dfe"]) if m["r2"] < 1 else math.inf
+        out.append(dict(m=m, dr2=dr2, df1=df1, df2=m["dfe"], fch=fch, pch=p_f(fch, df1, m["dfe"]) if math.isfinite(fch) else 0.0))
+        prev = m["r2"]
+    return out
+
+def ancova(y, g, cs):
+    """ANCOVA satu faktor dengan kovariat (JK Jenis III, pengekodan kesan), min terlaras, dan ujian kehomogenan kecerunan.
+    g: label kumpulan; cs: kovariat setiap kes. None jika tidak boleh dikira."""
+    lv = sorted(set(g), key=sortkey); q, nc = len(lv) - 1, len(cs[0])
+    if q < 1: return None
+    G = [effect_codes(v, lv) for v in g]
+    full = ols(y, [a + c for a, c in zip(G, cs)])
+    if full is None: return None
+    terms = []
+    red = ols(y, cs) if nc else None
+    sse_red = red["sse"] if red else sum((v - st.mean(y)) ** 2 for v in y)
+    terms.append((None, sse_red - full["sse"], q))
+    for j in range(nc):
+        r = ols(y, [a + [v for t, v in enumerate(c) if t != j] for a, c in zip(G, cs)])
+        if r is None: return None
+        terms.append((j, r["sse"] - full["sse"], 1))
+    # kehomogenan kecerunan: tambah interaksi kumpulan x kovariat
+    inter = ols(y, [a + c + [ai * ci for ai in a for ci in c] for a, c in zip(G, cs)])
+    hom = None
+    if inter is not None and inter["dfe"] > 0:
+        dfh = q * nc; fh = ((full["sse"] - inter["sse"]) / dfh) / (inter["sse"] / inter["dfe"]) if inter["sse"] > 0 else math.inf
+        hom = (fh, dfh, inter["dfe"], p_f(fh, dfh, inter["dfe"]) if math.isfinite(fh) else 0.0)
+    cm = [st.mean(c[j] for c in cs) for j in range(nc)]; b, V = full["b"], full["cov"]
+    def lvec(i): return [1.0] + effect_codes(lv[i], lv) + cm
+    adj = []
+    for i in range(len(lv)):
+        L = lvec(i); est = sum(a * c for a, c in zip(L, b)); se = math.sqrt(max(0.0, sum(L[a] * V[a][c] * L[c] for a in range(len(L)) for c in range(len(L)))))
+        adj.append((lv[i], sum(1 for v in g if v == lv[i]), st.mean(v for v, gg in zip(y, g) if gg == lv[i]), est, se))
+    tc = qt(.05, full["dfe"]); pairs = []; m = len(lv) * (len(lv) - 1) // 2
+    for i in range(len(lv)):
+        for j in range(i + 1, len(lv)):
+            L = [a - c for a, c in zip(lvec(i), lvec(j))]; d = sum(a * c for a, c in zip(L, b))
+            se = math.sqrt(max(0.0, sum(L[a] * V[a][c] * L[c] for a in range(len(L)) for c in range(len(L)))))
+            t = d / se if se else math.inf
+            pairs.append((lv[i], lv[j], d, se, min(1.0, p_t(t, full["dfe"]) * m) if se else 0.0))
+    return dict(levels=lv, full=full, terms=terms, hom=hom, adj=adj, pairs=pairs, tc=tc, sse=full["sse"], dfe=full["dfe"], n=len(y))
