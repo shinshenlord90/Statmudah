@@ -169,4 +169,70 @@ EN = {
     # --- bantuan ---
     "1. Fail > Buka CSV / Excel, atau taip data di 'Paparan Data' (dwiklik sel untuk edit).\n2. Setiap lajur = satu pemboleh ubah, setiap baris = satu kes (responden).\n3. Bersihkan data dahulu melalui menu Data: Cari Kes Berulang, Semak Julat Sah, Kod Data Hilang, Analisis Data Hilang.\n4. Songsangkan item negatif dan kira skor konstruk melalui menu Data.\n5. Pilih ujian dari menu Analisis. Keputusan dan ayat laporan APA keluar di 'Paparan Output'.\n6. Fail > Eksport Output ke HTML untuk menyalin jadual ke Word/LibreOffice.\n\nSig. < .05 biasanya bermaksud keputusan signifikan.":
         "1. File > Open CSV / Excel, or type data in 'Data View' (double-click a cell to edit).\n2. Each column = one variable, each row = one case (respondent).\n3. Clean the data first with the Data menu: Find Duplicate Cases, Check Valid Range, Missing Value Codes, Missing Data Analysis.\n4. Reverse negatively worded items and compute construct scores with the Data menu.\n5. Choose a test from the Analyze menu. Results and an APA report sentence appear in 'Output View'.\n6. File > Export Output to HTML to copy tables into Word/LibreOffice.\n\nSig. < .05 usually means the result is significant.",
+    # --- Fasa 2: skala & saringan ---
+    "Skala": "Scale", "Kebolehpercayaan (Cronbach's Alpha)...": "Reliability (Cronbach's Alpha)...", "Analisis Faktor Penerokaan (EFA)...": "Exploratory Factor Analysis (EFA)...",
+    "Saringan Data (sebelum SEM)": "Data Screening (before SEM)", "Outlier Univariat (|z| > 3.29)...": "Univariate Outliers (|z| > 3.29)...",
+    "Outlier Multivariat (Mahalanobis)...": "Multivariate Outliers (Mahalanobis)...", "Ujian Satu Faktor Harman (CMB)...": "Harman's Single-Factor Test (CMB)...",
+    "Kebolehpercayaan (Cronbach's Alpha)": "Reliability (Cronbach's Alpha)", "Analisis Faktor Penerokaan (EFA)": "Exploratory Factor Analysis (EFA)",
+    "Outlier Univariat (|z| > 3.29)": "Univariate Outliers (|z| > 3.29)", "Outlier Multivariat (Mahalanobis)": "Multivariate Outliers (Mahalanobis)",
+    "Ujian Satu Faktor Harman (CMB)": "Harman's Single-Factor Test (CMB)", "{t}: {v}": "{t}: {v}",
+    "Item skala:": "Scale items:", "Pilih sekurang-kurangnya 2 item.": "Select at least 2 items.", "Pilih sekurang-kurangnya 3 item.": "Select at least 3 items.",
+    "Tidak boleh dikira: kes lengkap tidak mencukupi atau varians skor jumlah sifar.": "Cannot be computed: not enough complete cases, or the total score has zero variance.",
+    "N (kes lengkap)": "N (complete cases)", "Bilangan item": "Number of items", "α item terpiawai": "α based on standardized items",
+    "{k} kes dikecualikan kerana ada item hilang (listwise).": "{k} cases were excluded because of missing items (listwise).",
+    "Statistik Item-Jumlah": "Item-Total Statistics", "Item": "Item", "Min skala jika dibuang": "Scale mean if item deleted",
+    "Varians skala jika dibuang": "Scale variance if item deleted", "Korelasi item-jumlah terbetul": "Corrected item-total correlation", "α jika item dibuang": "α if item deleted",
+    "AMARAN: {v} mempunyai korelasi item-jumlah negatif — mungkin item songsang. Songsangkan dahulu (Data > Songsangkan Item), kemudian ulang analisis dengan item _r.":
+        "WARNING: {v} has a negative item-total correlation — possibly a reverse-worded item. Reverse it first (Data > Reverse Items), then rerun the analysis with the _r item.",
+    "Korelasi item-jumlah < .30 (item lemah): {v}": "Item-total correlation < .30 (weak items): {v}",
+    "Membuang item ini akan menaikkan α: {v} — pertimbangkan dari segi teori sebelum membuang.": "Deleting these items would raise α: {v} — consider the theory before deleting.",
+    "Panduan α: ≥ .90 cemerlang, ≥ .80 baik, ≥ .70 boleh diterima, ≥ .60 dipersoalkan, ≥ .50 lemah, < .50 tidak boleh diterima.":
+        "Guide for α: ≥ .90 excellent, ≥ .80 good, ≥ .70 acceptable, ≥ .60 questionable, ≥ .50 poor, < .50 unacceptable.",
+    "cemerlang": "excellent", "baik": "good", "boleh diterima": "acceptable", "dipersoalkan": "questionable", "lemah": "poor", "tidak boleh diterima": "unacceptable",
+    "Kebolehpercayaan konsistensi dalaman bagi skala {k} item ini adalah {lab} (α Cronbach = {a}).": "The internal consistency reliability of this {k}-item scale was {lab} (Cronbach's α = {a}).",
+    "Kaedah pengekstrakan:": "Extraction method:", "Putaran:": "Rotation:", "Tiada": "None", "tiada": "none",
+    "Bilangan faktor (kosong = eigen > 1):": "Number of factors (blank = eigenvalue > 1):", "Sembunyikan muatan di bawah:": "Suppress loadings below:",
+    "Kes lengkap ({n}) mesti lebih banyak daripada bilangan item ({p}).": "Complete cases ({n}) must outnumber the items ({p}).",
+    "Matriks korelasi singular: ada item yang sama atau berkolinear sempurna (cth. M3 dan M3_r dipilih bersama). Buang salah satu.":
+        "The correlation matrix is singular: some items are identical or perfectly collinear (e.g. M3 and M3_r selected together). Remove one of them.",
+    "Bilangan faktor dan had muatan mesti nombor.": "The number of factors and the loading cut-off must be numbers.",
+    "Bilangan faktor mesti antara 1 dan {m}.": "The number of factors must be between 1 and {m}.",
+    "Putaran Promax gagal (matriks singular). Cuba Varimax.": "Promax rotation failed (singular matrix). Try Varimax.",
+    "Kaedah: {m}; putaran: {r}; N = {n} kes lengkap; {p} item.": "Method: {m}; rotation: {r}; N = {n} complete cases; {p} items.",
+    "Panduan: KMO ≥ .60 dan Bartlett Sig. < .05 bermaksud data sesuai untuk analisis faktor. MSA item < .50 → pertimbangkan untuk membuang item.":
+        "Guide: KMO ≥ .60 and Bartlett Sig. < .05 mean the data are suitable for factor analysis. Item MSA < .50 → consider removing the item.",
+    "AMARAN: pengekstrakan tidak menumpu selepas {i} lelaran — keputusan tidak boleh dipercayai. Kurangkan bilangan faktor.":
+        "WARNING: extraction did not converge after {i} iterations — the results are not reliable. Reduce the number of factors.",
+    "AMARAN: kes Heywood (komunaliti > 1) — biasanya terlalu banyak faktor atau item terlalu sedikit bagi setiap faktor.":
+        "WARNING: Heywood case (communality > 1) — usually too many factors or too few items per factor.",
+    "Komunaliti": "Communalities", "Awal": "Initial", "Pengekstrakan": "Extraction", "Faktor": "Factor", "Eigen awal": "Initial eigenvalue",
+    "% Varians": "% of Variance", "% Kumulatif": "Cumulative %", "SS pengekstrakan": "Extraction SS", "SS putaran": "Rotation SS",
+    "Jumlah Varians Diterangkan": "Total Variance Explained",
+    "Untuk putaran oblik (Promax), jumlah kuasa dua muatan putaran tidak boleh dijumlahkan; rujuk matriks pola dan struktur.":
+        "For an oblique rotation (Promax), rotated sums of squared loadings cannot be added; refer to the pattern and structure matrices.",
+    "Plot Scree": "Scree Plot", "Nilai eigen": "Eigenvalue", "Matriks Faktor Berputar (Varimax)": "Rotated Factor Matrix (Varimax)",
+    "Matriks Pola (Promax)": "Pattern Matrix (Promax)", "Matriks Faktor (tanpa putaran)": "Factor Matrix (unrotated)",
+    "Matriks Struktur": "Structure Matrix", "Matriks Korelasi Faktor": "Factor Correlation Matrix",
+    "Item diisih mengikut faktor dan saiz muatan; muatan |x| < {c} disembunyikan.": "Items are sorted by factor and loading size; loadings |x| < {c} are suppressed.",
+    "Item tanpa muatan ≥ {c}: {v}": "Items with no loading ≥ {c}: {v}", "Item dengan muatan silang (≥ {c} pada > 1 faktor): {v}": "Items with cross-loadings (≥ {c} on > 1 factor): {v}",
+    "nilai eigen > 1": "eigenvalue > 1", "ditetapkan oleh penyelidik": "set by the researcher",
+    "Analisis faktor penerokaan ({m}, putaran {r}) dijalankan ke atas {p} item (N = {n}). Nilai KMO = {kmo} dan ujian sfera Bartlett adalah {res}, χ²({df}) = {chi}, p {pb}. Sebanyak {k} faktor dikekalkan ({crit}) dan menerangkan {pct}% daripada jumlah varians.":
+        "An exploratory factor analysis ({m}, {r} rotation) was conducted on {p} items (N = {n}). The KMO was {kmo} and Bartlett's test of sphericity was {res}, χ²({df}) = {chi}, p {pb}. {k} factors were retained ({crit}), explaining {pct}% of the total variance.",
+    "Tiada outlier univariat ditemui.": "No univariate outliers found.",
+    "Panduan: semak dahulu sama ada outlier ialah ralat kemasukan data (betulkan) atau nilai sebenar (kekalkan, atau laporkan analisis dengan dan tanpa kes itu).":
+        "Guide: first check whether an outlier is a data-entry error (fix it) or a genuine value (keep it, or report the analysis with and without that case).",
+    "Pemboleh ubah (angka, ≥2):": "Variables (numeric, ≥2):", "Kes lengkap tidak mencukupi.": "Not enough complete cases.",
+    "Matriks kovarians singular: ada pemboleh ubah yang berkolinear sempurna (cth. item dan skor jumlahnya). Buang salah satu.":
+        "The covariance matrix is singular: some variables are perfectly collinear (e.g. items and their total score). Remove one of them.",
+    "N = {n} kes lengkap; dk = {k}; kriteria: p < .001.": "N = {n} complete cases; df = {k}; criterion: p < .001.",
+    "Tiada outlier multivariat ditemui.": "No multivariate outliers found.", "{k} kes ({pc}%) dikenal pasti sebagai outlier multivariat.": "{k} cases ({pc}%) were identified as multivariate outliers.",
+    "Semua item pengukuran (semua konstruk):": "All measurement items (all constructs):",
+    "Kaedah: Principal Components tanpa putaran, satu faktor; N = {n} kes lengkap; {p} item.": "Method: unrotated principal components, one factor; N = {n} complete cases; {p} items.",
+    "Eigen faktor pertama": "First-factor eigenvalue", "% Varians faktor pertama": "First-factor % of variance", "Bilangan faktor eigen > 1": "Factors with eigenvalue > 1",
+    "Keputusan: tiada petunjuk bias kaedah biasa yang serius (< 50%).": "Result: no sign of serious common method bias (< 50%).",
+    "AMARAN: faktor tunggal menerangkan ≥ 50% varians — kemungkinan bias kaedah biasa (CMB).": "WARNING: a single factor explains ≥ 50% of the variance — possible common method bias (CMB).",
+    "Ujian satu faktor Harman (PCA tanpa putaran) menunjukkan bahawa faktor pertama menerangkan {pc}% daripada jumlah varians, iaitu {cmp} ambang 50%.":
+        "Harman's single-factor test (unrotated PCA) showed that the first factor explained {pc}% of the total variance, {cmp} the 50% threshold.",
+    "di bawah": "below", "melebihi": "above",
+    "Hanya 1 faktor diekstrak, jadi putaran tidak dijalankan.": "Only 1 factor was extracted, so no rotation was performed.",
 }

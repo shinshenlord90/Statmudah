@@ -319,3 +319,152 @@ def read_xlsx(path):
         if any(cells.values()): rows.append([cells.get(j, "") for j in range(max(cells) + 1)])
     w = max(map(len, rows), default=0)
     return [r + [""] * (w - len(r)) for r in rows]
+
+# ---------- Fasa 2: kebolehpercayaan, EFA, saringan ----------
+def corr_matrix(rows):
+    """Matriks korelasi Pearson (baris = kes lengkap)."""
+    n, p = len(rows), len(rows[0]); m = [sum(r[j] for r in rows) / n for j in range(p)]
+    c = [[sum((r[i] - m[i]) * (r[j] - m[j]) for r in rows) for j in range(p)] for i in range(p)]
+    return [[c[i][j] / math.sqrt(c[i][i] * c[j][j]) if c[i][i] and c[j][j] else 0.0 for j in range(p)] for i in range(p)]
+
+def cov_matrix(rows):
+    n, p = len(rows), len(rows[0]); m = [sum(r[j] for r in rows) / n for j in range(p)]
+    return [[sum((r[i] - m[i]) * (r[j] - m[j]) for r in rows) / (n - 1) for j in range(p)] for i in range(p)], m
+
+def logdet(m):
+    """log|det| melalui penghapusan Gauss; None jika singular."""
+    a = [r[:] for r in m]; n = len(a); s = 0.0
+    for c in range(n):
+        piv = max(range(c, n), key=lambda r: abs(a[r][c]))
+        if abs(a[piv][c]) < 1e-14: return None
+        a[c], a[piv] = a[piv], a[c]; s += math.log(abs(a[c][c]))
+        for r in range(c + 1, n):
+            f = a[r][c] / a[c][c]
+            if f: a[r] = [x - f * y for x, y in zip(a[r], a[c])]
+    return s
+
+def jacobi_eig(a, sweeps=100):
+    """Nilai eigen (menurun) dan vektor eigen bagi matriks simetri, kaedah Jacobi kitaran."""
+    n = len(a); a = [r[:] for r in a]; v = [[float(i == j) for j in range(n)] for i in range(n)]
+    for _s in range(sweeps):
+        if sum(a[i][j] ** 2 for i in range(n) for j in range(i + 1, n)) < 1e-22: break
+        for p in range(n):
+            for q in range(p + 1, n):
+                if abs(a[p][q]) < 1e-300: continue
+                th = (a[q][q] - a[p][p]) / (2 * a[p][q])
+                t = (1 if th >= 0 else -1) / (abs(th) + math.sqrt(th * th + 1)); c = 1 / math.sqrt(t * t + 1); s = t * c
+                for k in range(n):
+                    x, y = a[k][p], a[k][q]; a[k][p], a[k][q] = c * x - s * y, s * x + c * y
+                for k in range(n):
+                    x, y = a[p][k], a[q][k]; a[p][k], a[q][k] = c * x - s * y, s * x + c * y
+                for k in range(n):
+                    x, y = v[k][p], v[k][q]; v[k][p], v[k][q] = c * x - s * y, s * x + c * y
+    order = sorted(range(n), key=lambda i: -a[i][i])
+    return [a[i][i] for i in order], [[v[k][i] for k in range(n)] for i in order]
+
+def reliability(rows):
+    """Cronbach's alpha dan statistik item (baris = kes lengkap, lajur = item). None jika < 2 item atau < 2 kes."""
+    n, k = len(rows), len(rows[0]) if rows else 0
+    if k < 2 or n < 2: return None
+    var = lambda v: st.variance(v) if len(set(v)) > 1 else 0.0
+    alpha = lambda cols: (len(cols) / (len(cols) - 1)) * (1 - sum(var([r[j] for r in rows]) for j in cols) / var([sum(r[j] for j in cols) for r in rows])) \
+        if len(cols) > 1 and var([sum(r[j] for j in cols) for r in rows]) > 0 else None
+    tot = [sum(r) for r in rows]; R = corr_matrix(rows)
+    rbar = sum(R[i][j] for i in range(k) for j in range(k) if i != j) / (k * (k - 1))
+    items = []
+    for j in range(k):
+        rest = [t - r[j] for t, r in zip(tot, rows)]; col = [r[j] for r in rows]
+        try: ritc = st.correlation(col, rest)
+        except st.StatisticsError: ritc = None
+        items.append(dict(mean=st.mean(col), sd=math.sqrt(var(col)), smd=st.mean(rest), svd=var(rest), ritc=ritc,
+                          aid=alpha([c for c in range(k) if c != j])))
+    return dict(n=n, k=k, alpha=alpha(list(range(k))), std=k * rbar / (1 + (k - 1) * rbar), items=items,
+                mean=st.mean(tot), sd=math.sqrt(var(tot)))
+
+def kmo_bartlett(R, n):
+    """KMO keseluruhan, MSA setiap item, dan ujian sfera Bartlett (χ², dk, p). None jika R singular."""
+    p = len(R); inv = inverse(R); ld = logdet(R)
+    if inv is None or ld is None: return None
+    pr = [[-inv[i][j] / math.sqrt(inv[i][i] * inv[j][j]) for j in range(p)] for i in range(p)]
+    r2 = lambda i: sum(R[i][j] ** 2 for j in range(p) if j != i); q2 = lambda i: sum(pr[i][j] ** 2 for j in range(p) if j != i)
+    kmo = sum(map(r2, range(p))) / (sum(map(r2, range(p))) + sum(map(q2, range(p))))
+    msa = [r2(i) / (r2(i) + q2(i)) for i in range(p)]
+    chi = -(n - 1 - (2 * p + 5) / 6) * ld; df = p * (p - 1) // 2
+    return kmo, msa, chi, df, p_chi2(chi, df)
+
+def _loadings(vals, vecs, k):
+    L = [[vecs[j][i] * math.sqrt(max(vals[j], 0.0)) for j in range(k)] for i in range(len(vecs[0]))]
+    for j in range(k):  # tanda: jumlah muatan positif (tanda vektor eigen adalah sembarangan)
+        if sum(r[j] for r in L) < 0:
+            for r in L: r[j] = -r[j]
+    return L
+
+def extract(R, k, method="paf", maxit=500, tol=1e-6):
+    """Pengekstrakan k faktor: 'pca' atau 'paf' (Principal Axis Factoring berulang, komunaliti awal = SMC).
+    Pulangkan (muatan, komunaliti awal, komunaliti akhir, lelaran, menumpu?)."""
+    p = len(R)
+    if method == "pca":
+        vals, vecs = jacobi_eig(R); L = _loadings(vals, vecs, k)
+        return L, [1.0] * p, [sum(x * x for x in r) for r in L], 0, True
+    inv = inverse(R)
+    h0 = [1 - 1 / inv[i][i] for i in range(p)] if inv else [max(abs(R[i][j]) for j in range(p) if j != i) for i in range(p)]
+    h = h0[:]
+    for it in range(1, maxit + 1):
+        vals, vecs = jacobi_eig([[h[i] if i == j else R[i][j] for j in range(p)] for i in range(p)])
+        L = _loadings(vals, vecs, k); hn = [sum(x * x for x in r) for r in L]
+        done = max(abs(a - b) for a, b in zip(h, hn)) < tol; h = hn
+        if done: return L, h0, h, it, True
+    return L, h0, h, maxit, False
+
+def varimax(L, maxit=1000, tol=1e-10):
+    """Putaran Varimax dengan normalisasi Kaiser (kaedah pasangan Kaiser). Pulangkan (muatan, matriks putaran T)."""
+    p, k = len(L), len(L[0]); T = [[float(i == j) for j in range(k)] for i in range(k)]
+    if k < 2: return [r[:] for r in L], T
+    h = [math.sqrt(sum(x * x for x in r)) or 1.0 for r in L]; A = [[x / hi for x in r] for r, hi in zip(L, h)]
+    for _it in range(maxit):
+        moved = False
+        for i in range(k - 1):
+            for j in range(i + 1, k):
+                u = [r[i] ** 2 - r[j] ** 2 for r in A]; v = [2 * r[i] * r[j] for r in A]
+                a, b = sum(u), sum(v); c = sum(x * x - y * y for x, y in zip(u, v)); d = 2 * sum(x * y for x, y in zip(u, v))
+                phi = math.atan2(d - 2 * a * b / p, c - (a * a - b * b) / p) / 4
+                if abs(phi) < tol: continue
+                moved = True; cs, sn = math.cos(phi), math.sin(phi)
+                for M in (A, T):
+                    for r in M: r[i], r[j] = r[i] * cs + r[j] * sn, -r[i] * sn + r[j] * cs
+        if not moved: break
+    return [[x * hi for x in r] for r, hi in zip(A, h)], T
+
+def promax(L, power=4):
+    """Promax (kappa=4) selepas Varimax, dengan normalisasi Kaiser. Pulangkan (pola, struktur, korelasi faktor)."""
+    V, _T = varimax(L); k = len(V[0])
+    if k < 2: return V, V, [[1.0]]
+    w = [math.sqrt(sum(x * x for x in r)) or 1.0 for r in V]; X = [[x / wi for x in r] for r, wi in zip(V, w)]
+    Y = [[x * abs(x) ** (power - 1) for x in r] for r in X]
+    mm = lambda A, B: [[sum(A[i][t] * B[t][j] for t in range(len(B))) for j in range(len(B[0]))] for i in range(len(A))]
+    tr = lambda A: [list(c) for c in zip(*A)]
+    xtx = inverse(mm(tr(X), X))
+    if xtx is None: return None
+    U = mm(mm(xtx, tr(X)), Y); utu = inverse(mm(tr(U), U))
+    if utu is None: return None
+    U = [[U[i][j] * math.sqrt(utu[j][j]) for j in range(k)] for i in range(k)]
+    P = [[x * wi for x in r] for r, wi in zip(mm(X, U), w)]
+    Ui = inverse(U)
+    if Ui is None: return None
+    phi = mm(Ui, tr(Ui))
+    for j in range(k):  # tanda: jumlah muatan positif
+        if sum(r[j] for r in P) < 0:
+            for r in P: r[j] = -r[j]
+            for t in range(k):
+                if t != j: phi[j][t] = phi[t][j] = -phi[j][t]
+    return P, mm(P, phi), phi
+
+def mahalanobis(rows):
+    """Jarak Mahalanobis D² setiap kes dan p (χ², dk = bilangan pemboleh ubah). None jika kovarians singular."""
+    S, m = cov_matrix(rows); Si = inverse(S); k = len(m)
+    if Si is None: return None
+    out = []
+    for r in rows:
+        d = [x - mu for x, mu in zip(r, m)]; d2 = sum(d[i] * Si[i][j] * d[j] for i in range(k) for j in range(k))
+        out.append((d2, p_chi2(d2, k)))
+    return out

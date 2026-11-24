@@ -6,7 +6,7 @@ from tkinter import ttk, filedialog, messagebox, simpledialog
 from smstats import *
 from i18n import EN
 
-VERSION = "2.0"
+VERSION = "2.1"
 CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "statmudah", "settings.json")
 SET = {"lang": "ms"}
 
@@ -147,14 +147,17 @@ def plot_ops(title, xs, ys, xl, yl, ref, W=380, H=280):
     L, B = 50, 40
     x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
     if ref == "diag": x0 = y0 = min(x0, y0); x1 = y1 = max(x1, y1)
-    if ref == "zero": y0, y1 = min(y0, 0), max(y1, 0)
+    if ref in ("zero", "scree"): y0, y1 = min(y0, 0), max(y1, 1 if ref == "scree" else 0)
     x1, y1 = (x1 if x1 > x0 else x0 + 1), (y1 if y1 > y0 else y0 + 1)
     px = lambda v: L + (v - x0) / (x1 - x0) * (W - L - 15); py = lambda v: H - B - (v - y0) / (y1 - y0) * (H - B - 30)
     ops = [("text", W / 2, 12, title, "center", 0, True), ("rect", L, 30, W - 15, H - B)]
     ops += [("text", px(v), H - B + 10, f"{v:.3g}", "center", 0, False) for v in (x0, x1)]
     ops += [("text", L - 4, py(v), f"{v:.3g}", "e", 0, False) for v in (y0, y1)]
     ops += [("text", W / 2, H - 10, xl, "center", 0, False), ("text", 12, H / 2 - B / 2, yl, "center", 90, False)]
-    ops.append(("line", L, py(0), W - 15, py(0)) if ref == "zero" else ("line", px(x0), py(x0), px(x1), py(x1)))
+    if ref == "scree":
+        ops.append(("line", L, py(1), W - 15, py(1)))
+        ops += [("seg", px(a), py(b), px(c), py(d)) for a, b, c, d in zip(xs, ys, xs[1:], ys[1:])]
+    else: ops.append(("line", L, py(0), W - 15, py(0)) if ref == "zero" else ("line", px(x0), py(x0), px(x1), py(x1)))
     ops += [("dot", px(x), py(y)) for x, y in zip(xs, ys)]
     return Plot((ops, W, H))
 
@@ -164,6 +167,7 @@ def draw_canvas(c, ops):
                                          font=("DejaVu Sans", 9, "bold") if o[6] else FONT, fill="#1E3A8A" if o[6] else "black")
         elif o[0] == "rect": c.create_rectangle(*o[1:], outline="#888")
         elif o[0] == "line": c.create_line(*o[1:], fill="#C0392B", dash=(4, 2))
+        elif o[0] == "seg": c.create_line(*o[1:], fill="#3C7FB1", width=1.5)
         else: c.create_oval(o[1] - 3, o[2] - 3, o[1] + 3, o[2] + 3, fill="#3C7FB1", outline="#1E3A8A")
 
 def svg(ops, W, H):
@@ -174,6 +178,7 @@ def svg(ops, W, H):
             out.append(f'<text x="{o[1]:.1f}" y="{o[2] + 4:.1f}" text-anchor="{anc}"{rot}{" font-weight=\"bold\"" if o[6] else ""}>{e(o[3])}</text>')
         elif o[0] == "rect": out.append(f'<rect x="{o[1]}" y="{o[2]}" width="{o[3] - o[1]}" height="{o[4] - o[2]}" fill="none" stroke="#888"/>')
         elif o[0] == "line": out.append(f'<line x1="{o[1]:.1f}" y1="{o[2]:.1f}" x2="{o[3]:.1f}" y2="{o[4]:.1f}" stroke="#C0392B" stroke-dasharray="4 2"/>')
+        elif o[0] == "seg": out.append(f'<line x1="{o[1]:.1f}" y1="{o[2]:.1f}" x2="{o[3]:.1f}" y2="{o[4]:.1f}" stroke="#3C7FB1" stroke-width="1.5"/>')
         else: out.append(f'<circle cx="{o[1]:.1f}" cy="{o[2]:.1f}" r="3" fill="#3C7FB1" stroke="#1E3A8A"/>')
     return "".join(out) + "</svg>"
 
@@ -207,8 +212,10 @@ class App:
         self.tree.bind("<Double-1>", self.edit_cell)
         o = ttk.Frame(self.nb); self.nb.add(o)
         self.out = tk.Text(o, font=("DejaVu Sans Mono", 10), wrap="none", bg="white", relief="flat")
-        oy = ttk.Scrollbar(o, command=self.out.yview); self.out.configure(yscrollcommand=oy.set)
-        oy.pack(side="right", fill="y"); self.out.pack(fill="both", expand=True)
+        oy, ox = ttk.Scrollbar(o, command=self.out.yview), ttk.Scrollbar(o, orient="horizontal", command=self.out.xview)
+        self.out.configure(yscrollcommand=oy.set, xscrollcommand=ox.set)
+        oy.pack(side="right", fill="y"); ox.pack(side="bottom", fill="x"); self.out.pack(fill="both", expand=True)
+        self.out.tag_configure("note", wrap="word")  # ayat panjang dibalut; jadual kekal tanpa balut
         self.out.tag_configure("h", font=("DejaVu Sans", 11, "bold"), foreground="#1E3A8A")
         self.out.tag_configure("apa", font=("DejaVu Sans", 10), foreground="#14532D", background="#ECFDF3", lmargin1=6, lmargin2=6, wrap="word")
         self.tabs(); self.new(sample=True)
@@ -234,9 +241,14 @@ class App:
                         (_("Padam Pemboleh Ubah"), self.del_col), None, (_("Kosongkan Output"), self.clear_output)])
         sub(_("Data"), [(_("Songsangkan Item (Kod Semula)..."), self.reverse_items), (_("Kira Pemboleh Ubah (Skor Konstruk)..."), self.compute), None,
                         (_("Analisis Data Hilang..."), self.missing_report), (_("Kod Data Hilang..."), self.missing_codes), None,
-                        (_("Cari Kes Berulang..."), self.duplicates), (_("Semak Julat Sah..."), self.range_check)])
+                        (_("Cari Kes Berulang..."), self.duplicates), (_("Semak Julat Sah..."), self.range_check), None,
+                        (_("Saringan Data (sebelum SEM)"), [(_("Outlier Univariat (|z| > 3.29)..."), self.outliers_z),
+                                                            (_("Outlier Multivariat (Mahalanobis)..."), self.outliers_mahal),
+                                                            (_("Ujian Satu Faktor Harman (CMB)..."), self.harman)])])
         sub(_("Analisis"), [(_("Statistik Deskriptif & Normaliti..."), self.descriptives), (_("Frekuensi..."), self.frequencies), None,
                             (_("Korelasi Pearson..."), self.correlation), (_("Korelasi Spearman..."), lambda: self.correlation(True)), None,
+                            (_("Skala"), [(_("Kebolehpercayaan (Cronbach's Alpha)..."), self.reliability),
+                                          (_("Analisis Faktor Penerokaan (EFA)..."), self.efa)]), None,
                             (_("Ujian-t Sampel Bebas..."), self.ttest), (_("Ujian-t Berpasangan..."), self.paired),
                             (_("ANOVA Sehala..."), self.anova), (_("ANOVA Dua Hala..."), self.anova2), (_("Khi Kuasa Dua..."), self.chisq), None,
                             (_("Ujian Bukan Parametrik"), [(_("Mann-Whitney U (2 kumpulan bebas)..."), self.mannwhitney),
@@ -394,6 +406,14 @@ class App:
         return g
     def case_id(self, i): return _("baris {n}", n=i + 1) + (f" ({self.cols[0]}={self.rows[i][0]})" if self.cols else "")
 
+    def complete(self, cols):
+        """Kes lengkap (listwise) bagi lajur angka: (indeks baris, nilai)."""
+        idx = [self.cols.index(c) for c in cols]; ids, rows = [], []
+        for k, row in enumerate(self.rows):
+            v = [self.num(row[i]) for i in idx]
+            if None not in v: ids.append(k); rows.append(v)
+        return ids, rows
+
     def table(self, head, rows): return [Table(head, rows)]
     def apa(self, s): return [Apa(_("Laporan APA (salin & sunting): ") + s)]
 
@@ -406,7 +426,7 @@ class App:
             elif isinstance(it, Plot):
                 c = tk.Canvas(self.out, width=it[1], height=it[2], bg="white", highlightthickness=1, highlightbackground=BORDER)
                 draw_canvas(c, it[0]); self.out.window_create("end", window=c, padx=4, pady=4)
-            else: self.out.insert("end", it + "\n")
+            else: self.out.insert("end", it + "\n", "note")
         self.out.insert("end", "\n"); self.out.see("end"); self.nb.select(1)
 
     # ----- menu Data -----
@@ -819,6 +839,146 @@ class App:
         out += self.apa(_("Model regresi logistik adalah {res}, χ²({k}, N = {n}) = {x}, p {p}, R² Nagelkerke = {nk}, dan mengklasifikasikan {pc}% kes dengan betul.",
                           res=sig(pmod, "signifikan", "tidak signifikan"), k=m["k"], n=m["n"], x=f2(m["chi2"]), p=pp(pmod), nk=nolead(m["nk"]), pc=f"{tot:.1f}"))
         self.write(_("{t}: {a} ~ {b}", t=title, a=dep, b=" + ".join(ind)), out)
+
+    # ----- skala: kebolehpercayaan & EFA -----
+    def reliability(self):
+        title = _("Kebolehpercayaan (Cronbach's Alpha)")
+        r = PickDialog(self, title, [(_("Item skala:"), True, True)]).result
+        if not r: return
+        items = r[0]
+        if len(items) < 2: return messagebox.showwarning(title, _("Pilih sekurang-kurangnya 2 item."))
+        ids, rows = self.complete(items); rel = reliability(rows)
+        if rel is None or rel["alpha"] is None: return messagebox.showwarning(title, _("Tidak boleh dikira: kes lengkap tidak mencukupi atau varians skor jumlah sifar."))
+        a = rel["alpha"]
+        out = self.table([_("N (kes lengkap)"), _("Bilangan item"), "Cronbach's α", _("α item terpiawai")], [[rel["n"], rel["k"], f"{a:.3f}", f"{rel['std']:.3f}"]])
+        if len(rows) < len(self.rows): out.append(_("{k} kes dikecualikan kerana ada item hilang (listwise).", k=len(self.rows) - len(rows)))
+        fx = lambda v: "-" if v is None else f"{v:.3f}"
+        out += ["", _("Statistik Item-Jumlah")] + self.table(
+            [_("Item"), _("Min"), _("SP"), _("Min skala jika dibuang"), _("Varians skala jika dibuang"), _("Korelasi item-jumlah terbetul"), _("α jika item dibuang")],
+            [[c, f"{it['mean']:.3f}", f"{it['sd']:.3f}", f"{it['smd']:.3f}", f"{it['svd']:.3f}", fx(it["ritc"]), fx(it["aid"])] for c, it in zip(items, rel["items"])])
+        neg = [c for c, it in zip(items, rel["items"]) if it["ritc"] is not None and it["ritc"] < 0]
+        weak = [c for c, it in zip(items, rel["items"]) if it["ritc"] is not None and 0 <= it["ritc"] < .3]
+        up = [c for c, it in zip(items, rel["items"]) if it["aid"] is not None and it["aid"] > a + .001]
+        if neg: out.append(_("AMARAN: {v} mempunyai korelasi item-jumlah negatif — mungkin item songsang. Songsangkan dahulu (Data > Songsangkan Item), kemudian ulang analisis dengan item _r.", v=", ".join(neg)))
+        if weak: out.append(_("Korelasi item-jumlah < .30 (item lemah): {v}", v=", ".join(weak)))
+        if up: out.append(_("Membuang item ini akan menaikkan α: {v} — pertimbangkan dari segi teori sebelum membuang.", v=", ".join(up)))
+        out.append(_("Panduan α: ≥ .90 cemerlang, ≥ .80 baik, ≥ .70 boleh diterima, ≥ .60 dipersoalkan, ≥ .50 lemah, < .50 tidak boleh diterima."))
+        lab = next(l for th, l in ((.9, _("cemerlang")), (.8, _("baik")), (.7, _("boleh diterima")), (.6, _("dipersoalkan")), (.5, _("lemah")), (-9, _("tidak boleh diterima"))) if a >= th)
+        out += self.apa(_("Kebolehpercayaan konsistensi dalaman bagi skala {k} item ini adalah {lab} (α Cronbach = {a}).", k=rel["k"], lab=lab, a=nolead(a)))
+        self.write(_("{t}: {v}", t=title, v=", ".join(items)), out)
+
+    def efa(self):
+        title = _("Analisis Faktor Penerokaan (EFA)")
+        r = PickDialog(self, title, [(_("Item:"), True, True)]).result
+        if not r: return
+        items = r[0]; p = len(items)
+        if p < 3: return messagebox.showwarning(title, _("Pilih sekurang-kurangnya 3 item."))
+        f = FormDialog(self, title, [("radio", _("Kaedah pengekstrakan:"), ["Principal Axis Factoring (PAF)", "Principal Components (PCA)"], 0),
+                                     ("radio", _("Putaran:"), ["Varimax", "Promax", _("Tiada")], 0),
+                                     ("entry", _("Bilangan faktor (kosong = eigen > 1):"), ""), ("entry", _("Sembunyikan muatan di bawah:"), "0.40")]).result
+        if not f: return
+        ids, rows = self.complete(items); n = len(rows)
+        if n <= p: return messagebox.showwarning(title, _("Kes lengkap ({n}) mesti lebih banyak daripada bilangan item ({p}).", n=n, p=p))
+        R = corr_matrix(rows); kb = kmo_bartlett(R, n)
+        if kb is None: return messagebox.showwarning(title, _("Matriks korelasi singular: ada item yang sama atau berkolinear sempurna (cth. M3 dan M3_r dipilih bersama). Buang salah satu."))
+        kmo, msa, chi, df, pb = kb; vals, _v = jacobi_eig(R)
+        try: k = int(f[2]) if f[2].strip() else sum(v > 1 for v in vals); cut = float(f[3].replace(",", "."))
+        except ValueError: return messagebox.showwarning(title, _("Bilangan faktor dan had muatan mesti nombor."))
+        if not 1 <= k < p: return messagebox.showwarning(title, _("Bilangan faktor mesti antara 1 dan {m}.", m=p - 1))
+        meth = "paf" if f[0] == 0 else "pca"; L, h0, h, it, ok = extract(R, k, meth)
+        rot = ["varimax", "promax", "none"][f[1]] if k > 1 else "none"
+        if rot == "varimax": P, Sm, phi = varimax(L)[0], None, None
+        elif rot == "promax":
+            res = promax(L)
+            if res is None: return messagebox.showwarning(title, _("Putaran Promax gagal (matriks singular). Cuba Varimax."))
+            P, Sm, phi = res
+        else: P, Sm, phi = L, None, None
+        mname = ["Principal Axis Factoring", "Principal Components"][f[0]]; rname = {"varimax": "Varimax", "promax": "Promax", "none": _("tiada")}[rot]
+        out = [_("Kaedah: {m}; putaran: {r}; N = {n} kes lengkap; {p} item.", m=mname, r=rname, n=n, p=p)]
+        if k == 1 and f[1] != 2: out.append(_("Hanya 1 faktor diekstrak, jadi putaran tidak dijalankan."))
+        out += self.table(["KMO", "Bartlett χ²", _("dk"), "Sig."], [[f"{kmo:.3f}", f"{chi:.3f}", df, fp(pb)]])
+        out.append(_("Panduan: KMO ≥ .60 dan Bartlett Sig. < .05 bermaksud data sesuai untuk analisis faktor. MSA item < .50 → pertimbangkan untuk membuang item."))
+        if not ok: out.append(_("AMARAN: pengekstrakan tidak menumpu selepas {i} lelaran — keputusan tidak boleh dipercayai. Kurangkan bilangan faktor.", i=it))
+        if any(x > 1 for x in h): out.append(_("AMARAN: kes Heywood (komunaliti > 1) — biasanya terlalu banyak faktor atau item terlalu sedikit bagi setiap faktor."))
+        out += ["", _("Komunaliti")] + self.table([_("Item"), _("Awal"), _("Pengekstrakan"), "MSA"],
+                                                  [[c, f"{a:.3f}", f"{b:.3f}", f"{m:.3f}" + (" *" if m < .5 else "")] for c, a, b, m in zip(items, h0, h, msa)])
+        ss_e = [sum(r_[j] ** 2 for r_ in L) for j in range(k)]
+        ss_r = [sum(r_[j] ** 2 for r_ in P) for j in range(k)] if rot == "varimax" else None
+        cum = [sum(vals[:i + 1]) / p * 100 for i in range(p)]
+        rows = []
+        for i in range(p):
+            row = [i + 1, f"{vals[i]:.3f}", f"{vals[i] / p * 100:.2f}", f"{cum[i]:.2f}"]
+            row += [f"{ss_e[i]:.3f}", f"{ss_e[i] / p * 100:.2f}", f"{sum(ss_e[:i + 1]) / p * 100:.2f}"] if i < k else ["", "", ""]
+            if ss_r: row += [f"{ss_r[i]:.3f}", f"{ss_r[i] / p * 100:.2f}", f"{sum(ss_r[:i + 1]) / p * 100:.2f}"] if i < k else ["", "", ""]
+            rows.append(row)
+        head = [_("Faktor"), _("Eigen awal"), _("% Varians"), _("% Kumulatif"), _("SS pengekstrakan"), _("% Varians"), _("% Kumulatif")]
+        if ss_r: head += [_("SS putaran"), _("% Varians"), _("% Kumulatif")]
+        out += ["", _("Jumlah Varians Diterangkan")] + self.table(head, rows)
+        if rot == "promax": out.append(_("Untuk putaran oblik (Promax), jumlah kuasa dua muatan putaran tidak boleh dijumlahkan; rujuk matriks pola dan struktur."))
+        out.append(plot_ops(_("Plot Scree"), list(range(1, p + 1)), vals, _("Faktor"), _("Nilai eigen"), "scree"))
+        order = sorted(range(p), key=lambda i: (max(range(k), key=lambda j: abs(P[i][j])), -max(abs(x) for x in P[i])))
+        fmtl = lambda x: f"{x:.3f}" if abs(x) >= cut else ""
+        mat = lambda M: self.table([_("Item")] + [str(j + 1) for j in range(k)], [[items[i]] + [fmtl(x) for x in M[i]] for i in order])
+        name = {"varimax": _("Matriks Faktor Berputar (Varimax)"), "promax": _("Matriks Pola (Promax)"), "none": _("Matriks Faktor (tanpa putaran)")}[rot]
+        out += ["", name] + mat(P)
+        if rot == "promax":
+            out += ["", _("Matriks Struktur")] + mat(Sm)
+            out += ["", _("Matriks Korelasi Faktor")] + self.table([_("Faktor")] + [str(j + 1) for j in range(k)], [[i + 1] + [f"{x:.3f}" for x in phi[i]] for i in range(k)])
+        out.append(_("Item diisih mengikut faktor dan saiz muatan; muatan |x| < {c} disembunyikan.", c=fmtn(cut)))
+        none_ = [items[i] for i in range(p) if all(abs(x) < cut for x in P[i])]
+        cross = [items[i] for i in range(p) if sum(abs(x) >= cut for x in P[i]) > 1]
+        if none_: out.append(_("Item tanpa muatan ≥ {c}: {v}", c=fmtn(cut), v=", ".join(none_)))
+        if cross: out.append(_("Item dengan muatan silang (≥ {c} pada > 1 faktor): {v}", c=fmtn(cut), v=", ".join(cross)))
+        pct = sum(ss_e) / p * 100
+        out += self.apa(_("Analisis faktor penerokaan ({m}, putaran {r}) dijalankan ke atas {p} item (N = {n}). Nilai KMO = {kmo} dan ujian sfera Bartlett adalah {res}, χ²({df}) = {chi}, p {pb}. Sebanyak {k} faktor dikekalkan ({crit}) dan menerangkan {pct}% daripada jumlah varians.",
+                          m=mname, r=rname, p=p, n=n, kmo=nolead(kmo), res=sig(pb, "signifikan", "tidak signifikan"), df=df, chi=f2(chi), pb=pp(pb), k=k,
+                          crit=_("nilai eigen > 1") if not f[2].strip() else _("ditetapkan oleh penyelidik"), pct=f"{pct:.2f}"))
+        self.write(_("{t}: {v}", t=title, v=", ".join(items)), out)
+
+    # ----- saringan data -----
+    def outliers_z(self):
+        title = _("Outlier Univariat (|z| > 3.29)")
+        r = PickDialog(self, title, [(_("Pemboleh ubah (angka):"), True, True)]).result
+        if not r: return
+        rows = []
+        for c in r[0]:
+            i = self.cols.index(c); v = [(k, self.num(row[i])) for k, row in enumerate(self.rows)]; v = [(k, x) for k, x in v if x is not None]
+            if len(v) < 3: continue
+            m, sd = st.mean(x for _k, x in v), st.stdev(x for _k, x in v)
+            rows += [[k + 1, self.rows[k][0], c, fmtn(x), f"{(x - m) / sd:.2f}"] for k, x in v if sd and abs((x - m) / sd) > 3.29]
+        out = self.table([_("Baris"), self.cols[0], _("Pemboleh ubah"), _("Nilai"), "z"], rows) if rows else [_("Tiada outlier univariat ditemui.")]
+        out.append(_("Panduan: semak dahulu sama ada outlier ialah ralat kemasukan data (betulkan) atau nilai sebenar (kekalkan, atau laporkan analisis dengan dan tanpa kes itu)."))
+        self.write(title, out)
+
+    def outliers_mahal(self):
+        title = _("Outlier Multivariat (Mahalanobis)")
+        r = PickDialog(self, title, [(_("Pemboleh ubah (angka, ≥2):"), True, True)]).result
+        if not r: return
+        if len(r[0]) < 2: return messagebox.showwarning(title, _("Pilih sekurang-kurangnya 2 pemboleh ubah."))
+        ids, rows = self.complete(r[0])
+        if len(rows) <= len(r[0]): return messagebox.showwarning(title, _("Kes lengkap tidak mencukupi."))
+        md = mahalanobis(rows)
+        if md is None: return messagebox.showwarning(title, _("Matriks kovarians singular: ada pemboleh ubah yang berkolinear sempurna (cth. item dan skor jumlahnya). Buang salah satu."))
+        flag = sorted([(d, p, k) for (d, p), k in zip(md, ids) if p < .001], reverse=True)
+        out = [_("N = {n} kes lengkap; dk = {k}; kriteria: p < .001.", n=len(rows), k=len(r[0]))]
+        out += self.table([_("Baris"), self.cols[0], "D²", "p"], [[k + 1, self.rows[k][0], f"{d:.3f}", fp(p)] for d, p, k in flag]) if flag else [_("Tiada outlier multivariat ditemui.")]
+        out.append(_("{k} kes ({pc}%) dikenal pasti sebagai outlier multivariat.", k=len(flag), pc=f"{100 * len(flag) / len(rows):.1f}"))
+        self.write(_("{t}: {v}", t=title, v=", ".join(r[0])), out)
+
+    def harman(self):
+        title = _("Ujian Satu Faktor Harman (CMB)")
+        r = PickDialog(self, title, [(_("Semua item pengukuran (semua konstruk):"), True, True)]).result
+        if not r: return
+        if len(r[0]) < 3: return messagebox.showwarning(title, _("Pilih sekurang-kurangnya 3 item."))
+        ids, rows = self.complete(r[0])
+        if len(rows) <= len(r[0]): return messagebox.showwarning(title, _("Kes lengkap tidak mencukupi."))
+        vals, _v = jacobi_eig(corr_matrix(rows)); p = len(r[0]); pc = vals[0] / p * 100
+        out = [_("Kaedah: Principal Components tanpa putaran, satu faktor; N = {n} kes lengkap; {p} item.", n=len(rows), p=p)]
+        out += self.table([_("Eigen faktor pertama"), _("% Varians faktor pertama"), _("Bilangan faktor eigen > 1")], [[f"{vals[0]:.3f}", f"{pc:.2f}", sum(v > 1 for v in vals)]])
+        out.append(_("Keputusan: tiada petunjuk bias kaedah biasa yang serius (< 50%).") if pc < 50 else _("AMARAN: faktor tunggal menerangkan ≥ 50% varians — kemungkinan bias kaedah biasa (CMB)."))
+        out += self.apa(_("Ujian satu faktor Harman (PCA tanpa putaran) menunjukkan bahawa faktor pertama menerangkan {pc}% daripada jumlah varians, iaitu {cmp} ambang 50%.",
+                          pc=f"{pc:.2f}", cmp=_("di bawah") if pc < 50 else _("melebihi")))
+        self.write(title, out)
 
     def help(self):
         messagebox.showinfo(_("Cara Guna"), _(

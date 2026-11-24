@@ -37,3 +37,16 @@ assert abs(s.mann_whitney(a, b)[2] - .035426) < 1e-5 and abs(s.wilcoxon(x, y)[3]
 assert abs(s.kruskal([a, b, [5, 6, 7, 7]])[0] - 9.303025) < 1e-5
 assert s.skew_kurt([1, 2, 3]) is None and s.wilcoxon([1, 2], [1, 2]) is None
 print("fasa 1 statistik ok")
+# Fasa 2: rujukan pingouin 0.5 / factor_analyzer 0.5 (Rotator varimax, toleransi ketat)
+X = [[4, 5, 4, 2, 1, 2], [3, 4, 3, 2, 2, 1], [5, 5, 4, 4, 5, 4], [2, 1, 2, 4, 5, 4], [4, 4, 5, 2, 2, 3],
+     [1, 2, 1, 5, 4, 5], [3, 3, 4, 3, 3, 3], [5, 4, 5, 1, 2, 1], [2, 2, 3, 4, 4, 5], [4, 5, 5, 3, 2, 2]]
+assert abs(s.reliability(X)["alpha"] - -.198190) < 1e-5   # alpha negatif: item 4-6 berlawanan arah
+R = s.corr_matrix(X); kmo, msa, chi, df, pb = s.kmo_bartlett(R, len(X))
+assert abs(kmo - .545238) < 1e-5 and abs(chi - 52.568724) < 1e-4 and df == 15
+assert all(abs(a - b) < 1e-5 for a, b in zip(s.jacobi_eig(R)[0], [4.45768, .881185, .342343, .243997, .065568, .009227]))
+V, _T = s.varimax(s.extract(R, 2, "pca")[0])
+ref = [[.943485, .261573], [.837552, .353584], [.840152, .400978], [.422816, .857863], [.240088, .908846], [.379473, .863007]]
+cols = [[abs(r[j]) for r in V] for j in range(2)]; rc = [[r[j] for r in ref] for j in range(2)]
+assert all(min(max(abs(a - b) for a, b in zip(c, rcol)) for c in cols) < 1e-5 for rcol in rc)  # sama hingga tanda & susunan
+assert s.kmo_bartlett([[1, 1], [1, 1]], 10) is None and s.mahalanobis([[1, 2], [2, 4], [3, 6]]) is None  # singular
+print("fasa 2 statistik ok")

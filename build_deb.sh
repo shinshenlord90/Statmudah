@@ -20,7 +20,9 @@ Description: Aplikasi statistik mudah (seperti PSPP) bergaya Windows 7
  Penyediaan data (kes berulang, julat sah, data hilang, item songsang,
  skor konstruk), deskriptif dan normaliti, korelasi, ujian-t, ANOVA,
  ujian bukan parametrik, khi kuasa dua, regresi linear dan logistik,
- saiz kesan, ayat laporan APA dan eksport HTML untuk Word. BM/English.
+ kebolehpercayaan (Cronbach alpha), EFA (PAF/PCA, Varimax/Promax), saringan
+ outlier (z, Mahalanobis) dan ujian Harman, saiz kesan, ayat laporan APA
+ dan eksport HTML untuk Word. BM/English.
 EOF
 cat > $P/usr/share/applications/statmudah.desktop <<EOF
 [Desktop Entry]
