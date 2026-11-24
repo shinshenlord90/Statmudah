@@ -1,0 +1,6 @@
+*.deb
+*.zip
+*.png
+__pycache__/
+build/
+data/
